@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+@theme {
+  --color-gpt-sidebar: #202123;
+  --color-gpt-canvas: #343541;
+  --color-gpt-surface: #40414f;
+  --color-gpt-elevated: #444654;
+  --color-gpt-user: #2f2f2f;
+  --color-gpt-border: #565869;
+  --color-gpt-text: #ececf1;
+  --color-gpt-muted: #8e8ea0;
+  --color-gpt-accent: #10a37f;
+  --color-gpt-accent-hover: #0d8f6e;
+}
+
 body {
   margin: 0;
   width: 100%;

@@ -1,8 +1,12 @@
+import { createVirtualCursor } from "./content/virtualCursor";
+import { performReliableClick } from "./content/performReliableClick";
+
 console.log("General Agent Content Script Loaded");
 
 const interactableSelector = 'button, a, input, textarea, select, [role="button"], [role="textbox"], [role="link"], [role="combobox"], [role="menuitem"], [role="option"], [role="checkbox"], [role="radio"], [role="tab"], [role="switch"], [contenteditable="true"], [tabindex]';
 const agentIdAttr = 'data-agent-id';
 let agentIdCounter = 0;
+const virtualCursor = createVirtualCursor();
 
 const getOrAssignAgentId = (el: Element) => {
     const existing = el.getAttribute(agentIdAttr);
@@ -159,17 +163,6 @@ const getViewportInfo = () => ({
     scrollY: window.scrollY
 })
 
-const dispatchMouseEvent = (el: Element, type: string, x: number, y: number) => {
-    const event = new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        clientX: x,
-        clientY: y,
-        view: window
-    });
-    el.dispatchEvent(event);
-}
-
 const dataUrlToFile = async (dataUrl: string, name: string, type: string) => {
     const res = await fetch(dataUrl);
     const blob = await res.blob();
@@ -189,15 +182,17 @@ const pickFileInput = (root?: HTMLElement | null) => {
 
 const executeAction = async (action: any, assets?: any[]) => {
     console.log("Executing:", action);
-    const { action: act, params } = action;
+    const { action: act, params = {} } = action || {};
+    if (!act) return "Invalid action payload";
 
     try {
         if (act === "CLICK") {
-            const label = params.label;
+            const label = String(params.label || '').trim();
+            if (!label) return "Missing label for CLICK";
             const el = findElementByText(label);
             if (el) {
                 el.scrollIntoView({ block: "center", inline: "center" });
-                el.click();
+                await performReliableClick(el, virtualCursor, Number(params?.alpha ?? 0.2));
                 return `Clicked "${label}"`;
             }
             return `Failed to find element "${label}"`;
@@ -208,7 +203,8 @@ const executeAction = async (action: any, assets?: any[]) => {
             const list = collectInteractables();
             const el = list[index];
             if (el instanceof HTMLElement) {
-                el.click();
+                el.scrollIntoView({ block: "center", inline: "center" });
+                await performReliableClick(el, virtualCursor, Number(params?.alpha ?? 0.2));
                 return `Clicked index ${index}`;
             }
             return `Failed to click index ${index}`;
@@ -219,7 +215,7 @@ const executeAction = async (action: any, assets?: any[]) => {
             const el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLElement | null;
             if (el) {
                 el.scrollIntoView({ block: "center", inline: "center" });
-                el.click();
+                await performReliableClick(el, virtualCursor, Number(params?.alpha ?? 0.2));
                 return `Clicked id ${id}`;
             }
             return `Failed to find element id ${id}`;
@@ -230,20 +226,21 @@ const executeAction = async (action: any, assets?: any[]) => {
             const y = Number(params.y);
             const el = document.elementFromPoint(x, y) as HTMLElement | null;
             if (el) {
-                dispatchMouseEvent(el, 'mouseover', x, y);
-                dispatchMouseEvent(el, 'mousedown', x, y);
-                dispatchMouseEvent(el, 'mouseup', x, y);
-                dispatchMouseEvent(el, 'click', x, y);
+                await virtualCursor.clickAt(el, x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 return `Clicked coords ${x},${y}`;
             }
             return `Failed to find element at ${x},${y}`;
         }
 
         if (act === "TYPE") {
-            const { label, text } = params;
+            const label = String(params.label || '').trim();
+            const text = String(params.text ?? '');
+            if (!label) return "Missing label for TYPE";
             const el = findElementByPlaceholderOrLabel(label);
             if (el) {
                 el.scrollIntoView({ block: "center", inline: "center" });
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 (el as HTMLElement).focus();
                 if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     setNativeValue(el, text);
@@ -261,9 +258,12 @@ const executeAction = async (action: any, assets?: any[]) => {
 
         if (act === "TYPE_ID") {
             const { id, text } = params;
+            if (!id) return "Missing id for TYPE_ID";
             const el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLElement | null;
             if (el) {
                 el.scrollIntoView({ block: "center", inline: "center" });
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 el.focus();
                 if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     setNativeValue(el, text);
@@ -285,6 +285,7 @@ const executeAction = async (action: any, assets?: any[]) => {
             const text = String(params.text ?? '');
             const el = document.elementFromPoint(x, y) as HTMLElement | null;
             if (el) {
+                await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 el.focus();
                 if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     setNativeValue(el, text);
@@ -301,8 +302,13 @@ const executeAction = async (action: any, assets?: any[]) => {
         }
 
         if (act === "SCROLL") {
-            const direction = params?.direction === "up" ? -500 : 500;
+            const directionName = params?.direction === "up" ? "up" : "down";
+            const direction = directionName === "up" ? -500 : 500;
             const target = pickBestScrollable();
+            if (target instanceof Element) {
+                const { x, y } = virtualCursor.centerOf(target);
+                await virtualCursor.wheelAt(x, y, directionName, { alpha: Number(params?.alpha ?? 0.2) });
+            }
             target.scrollBy({ top: direction, behavior: "smooth" });
             return direction > 0 ? "Scrolled down" : "Scrolled up";
         }
@@ -314,11 +320,13 @@ const executeAction = async (action: any, assets?: any[]) => {
         }
 
         if (act === "HOVER") {
-            const label = params.label;
+            const label = String(params.label || '').trim();
+            if (!label) return "Missing label for HOVER";
             const el = findElementByText(label);
             if (el) {
                 el.scrollIntoView({ block: "center", inline: "center" });
-                el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.hoverAt(el, x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 return `Hovered "${label}"`;
             }
             return `Failed to find element "${label}"`;
@@ -329,7 +337,8 @@ const executeAction = async (action: any, assets?: any[]) => {
             const el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLElement | null;
             if (el) {
                 el.scrollIntoView({ block: "center", inline: "center" });
-                el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.hoverAt(el, x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 return `Hovered id ${id}`;
             }
             return `Failed to find element id ${id}`;
@@ -340,7 +349,7 @@ const executeAction = async (action: any, assets?: any[]) => {
             const y = Number(params.y);
             const el = document.elementFromPoint(x, y) as HTMLElement | null;
             if (el) {
-                dispatchMouseEvent(el, 'mouseover', x, y);
+                await virtualCursor.hoverAt(el, x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 return `Hovered coords ${x},${y}`;
             }
             return `Failed to find element at ${x},${y}`;
@@ -371,9 +380,14 @@ const executeAction = async (action: any, assets?: any[]) => {
         }
 
         if (act === "SELECT") {
-            const { label, value } = params;
+            const label = String(params.label || '').trim();
+            const value = String(params.value ?? '');
+            if (!label) return "Missing label for SELECT";
             const el = findElementByPlaceholderOrLabel(label) as HTMLInputElement | HTMLSelectElement | HTMLElement | null;
             if (el) {
+                el.scrollIntoView({ block: "center", inline: "center" });
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 if (el instanceof HTMLSelectElement) {
                     const option = Array.from(el.options).find(o => o.value === value || o.text.toLowerCase() === String(value).toLowerCase());
                     if (option) el.value = option.value;
@@ -391,8 +405,12 @@ const executeAction = async (action: any, assets?: any[]) => {
 
         if (act === "SELECT_ID") {
             const { id, value } = params;
+            if (!id) return "Missing id for SELECT_ID";
             const el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLInputElement | HTMLSelectElement | HTMLElement | null;
             if (el) {
+                el.scrollIntoView({ block: "center", inline: "center" });
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 if (el instanceof HTMLSelectElement) {
                     const option = Array.from(el.options).find(o => o.value === value || o.text.toLowerCase() === String(value).toLowerCase());
                     if (option) el.value = option.value;
@@ -428,6 +446,7 @@ const executeAction = async (action: any, assets?: any[]) => {
 }
 
 const findElementByText = (text: string): HTMLElement | null => {
+    if (!text) return null;
     // Case insensitive partial match for robustness
     const lower = text.toLowerCase();
     const candidates = collectInteractablesAll();
@@ -447,6 +466,7 @@ const findElementByText = (text: string): HTMLElement | null => {
 }
 
 const scoreLabelMatch = (label: string, target: string) => {
+    if (!label || !target) return 0;
     const l = label.toLowerCase();
     const t = target.toLowerCase();
     let score = 0;
@@ -480,6 +500,7 @@ const getFieldLabels = (el: Element) => {
 }
 
 const findElementByPlaceholderOrLabel = (text: string): HTMLElement | null => {
+    if (!text) return null;
     const lower = text.toLowerCase();
     const xpath = `//input[contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //textarea[contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //input[contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //textarea[contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //select[contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //input[contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //textarea[contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')] | //select[contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${lower}')]`;
     try {
