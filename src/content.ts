@@ -175,9 +175,14 @@ const pickFileInput = (root?: HTMLElement | null) => {
         const within = root.querySelector('input[type="file"]') as HTMLInputElement | null;
         if (within) return within;
     }
-    const inputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]'))
-        .filter(el => isElementVisible(el));
-    return inputs[0] || null;
+    const inputs = Array.from(
+        document.querySelectorAll<HTMLInputElement>('input[type="file"]')
+    ).filter(el => !el.disabled);
+    if (inputs.length === 0) return null;
+    const visible = inputs.find((el) => isElementVisible(el));
+    if (visible) return visible;
+    // Many modern job forms keep file inputs hidden and trigger them via custom buttons.
+    return inputs[0];
 }
 
 const executeAction = async (action: any, assets?: any[]) => {

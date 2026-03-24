@@ -15,3 +15,7 @@ this is a chrome extension which use AI models via API to do tasks on the sites 
 ## Hardcoded False Positive AND PLACE HOLDER
 
 - do not add false positive valiue to anything, if the value exist you can other wise must not show fake checked, or value.
+
+## BACKWARD COMPATIBILITY AND REDUNDANCY
+- you must not never ever support backward and legacy code.
+- you must not do any redundancy in code, no duplicate no redundancy no backward compatibility . 

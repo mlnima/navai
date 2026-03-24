@@ -20,6 +20,8 @@ interface ProcessStepInput {
     fileContext?: string;
     elementMap?: string;
     assetCatalog?: string;
+    tabContext?: string;
+    mcpCatalog?: string;
     supportsVision?: boolean;
     screenshotDataUrl?: string;
     viewport?: ViewportInfo;
@@ -79,6 +81,8 @@ export class AgentBrain {
             fileContext,
             elementMap,
             assetCatalog,
+            tabContext,
+            mcpCatalog,
             supportsVision,
             screenshotDataUrl,
             viewport,
@@ -102,6 +106,7 @@ Do NOT include markdown fences or extra text.
 
 Do not repeat the same failed action. If blocked, use ASK.
 Prefer ids from ELEMENT MAP first, then exact labels, then coordinates.
+Prefer staying in the current tab; use OPEN_TAB only when a new tab is clearly needed.
 If you output invalid JSON, recover by outputting valid JSON only.
 
 Supported Actions:
@@ -122,8 +127,34 @@ Supported Actions:
 15. SELECT_ID -> { "id": "el_...", "value": "option" }
 16. UPLOAD_ASSET -> { "assetName": "file.pdf", "id"?: "el_...", "x"?: 123, "y"?: 456, "label"?: "Upload" }
 17. KEY -> { "key": "Enter" }
-18. DONE -> { "summary": "message" }
-19. ASK -> { "question": "text" }`;
+18. OPEN_TAB -> { "url": "https://...", "background"?: false }
+19. SWITCH_TAB -> { "tabId"?: 123, "index"?: 0, "urlContains"?: "docs" }
+20. CLOSE_TAB -> { "tabId"?: 123 }
+21. CLOSE_EXTRA_TABS -> {}
+22. MCP_CALL -> { "serverId": "mcp_...", "tool": "tool_name", "arguments": { "key": "value" } }
+For MCP attachments, prefer arguments.attachments with filename/content(base64)/mimeType.
+You may also provide attachments[].textContent or arguments.generatedFiles and the client will convert to base64.
+Canonical target shape sent to MCP is always:
+{ "attachments": [ { "filename": "...", "content": "<base64>", "mimeType": "..." } ] }.
+Example for CV + generated cover letter:
+{
+  "action":"MCP_CALL",
+  "params":{
+    "serverId":"mcp_...",
+    "tool":"create_draft",
+    "arguments":{
+      "to":"user@example.com",
+      "subject":"Application",
+      "body":"Please find attachments.",
+      "attachments":[
+        { "assetName":"CV.pdf" },
+        { "filename":"CoverLetter.txt", "textContent":"Dear Hiring Manager...", "mimeType":"text/plain" }
+      ]
+    }
+  }
+}
+23. DONE -> { "summary": "message" }
+24. ASK -> { "question": "text" }`;
 
         const textContext = `TASK:\n${task}
 
@@ -138,6 +169,10 @@ FILES (text context):\n${fileContext || "(none)"}
 ELEMENT MAP (JSON):\n${elementMap || "(none)"}
 
 ASSETS (upload-only list):\n${assetCatalog || "(none)"}
+
+${tabContext || "TAB CONTEXT: unavailable"}
+
+${mcpCatalog || "MCP TOOLS: none"}
 
 VISION CAPABILITY:\n${visionEnabled ? "enabled" : "disabled"}
 

@@ -1,6 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { AgentBrain } from './agent/brain';
 import { parseAgentMessage } from './utils/parseAgentMessage';
+import {
+	createTabSessionManager,
+	clearTabSessionState,
+} from './agent/tabSessionManager';
+import {
+	parseMcpServersJsonInput,
+	toMcpServersJsonText,
+	type McpServerConfig,
+} from './agent/mcpConfig';
+import {
+	buildMcpToolCatalogText,
+	callMcpTool,
+	listMcpTools,
+	testMcpConnection,
+} from './agent/mcpClient';
 
 interface Message {
 	role: 'user' | 'agent' | 'system';
@@ -28,7 +43,29 @@ interface AssetFile {
 	type: string;
 	size: number;
 	dataUrl: string;
+	source?: 'uploaded' | 'generated';
 }
+
+const sessionIdKey = 'agent_active_session_id';
+const getSessionMessagesKey = (sessionId: string) =>
+	`agent_session_messages_${sessionId}`;
+const assetsStorageKey = 'agent_assets_v1';
+const mcpServersStorageKey = 'agent_mcp_servers';
+const uiZoomStorageKey = 'agent_ui_zoom';
+const uiZoomMin = 0.7;
+const uiZoomMax = 1.8;
+const uiZoomStep = 0.1;
+const uiZoomDefault = 1;
+const createSessionId = () =>
+	`sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+const resolveInitialSessionId = () => {
+	const existing = localStorage.getItem(sessionIdKey);
+	if (existing?.trim()) return existing;
+	const next = createSessionId();
+	localStorage.setItem(sessionIdKey, next);
+	return next;
+};
+
 const App = () => {
 	const [task, setTask] = useState('');
 	const [messages, setMessages] = useState<Message[]>([]);
@@ -82,6 +119,28 @@ const App = () => {
 			Number(localStorage.getItem('agent_invalid_retry_max_ms') || '5000') ||
 			5000
 	);
+	const [maxConsecutiveFailures, setMaxConsecutiveFailures] = useState(
+		() =>
+			Number(localStorage.getItem('agent_max_consecutive_failures') || '3') ||
+			3
+	);
+	const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(() => {
+		try {
+			const raw = localStorage.getItem(mcpServersStorageKey);
+			return raw ? parseMcpServersJsonInput(raw) : [];
+		} catch {
+			return [];
+		}
+	});
+	const [showAddMcp, setShowAddMcp] = useState(false);
+	const [mcpJsonInput, setMcpJsonInput] = useState('');
+	const [mcpInputError, setMcpInputError] = useState('');
+	const [mcpTestingById, setMcpTestingById] = useState<Record<string, boolean>>(
+		{}
+	);
+	const [mcpTestResultById, setMcpTestResultById] = useState<
+		Record<string, string>
+	>({});
 	const [templates, setTemplates] = useState<PromptTemplate[]>(() => {
 		try {
 			const raw = localStorage.getItem('agent_prompt_templates');
@@ -101,8 +160,14 @@ const App = () => {
 	const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
 	const [assets, setAssets] = useState<AssetFile[]>([]);
 	const [sessionLoaded, setSessionLoaded] = useState(false);
+	const [sessionId, setSessionId] = useState(() => resolveInitialSessionId());
 	const [showTemplatePanel, setShowTemplatePanel] = useState(false);
 	const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+	const [uiZoom, setUiZoom] = useState(() => {
+		const raw = Number(localStorage.getItem(uiZoomStorageKey));
+		if (!Number.isFinite(raw)) return uiZoomDefault;
+		return Math.max(uiZoomMin, Math.min(uiZoomMax, raw));
+	});
 	const [isDark, setIsDark] = useState(true);
 	const [showTemplateForm, setShowTemplateForm] = useState(false);
 	const [openTemplateMenuId, setOpenTemplateMenuId] = useState<string | null>(
@@ -110,6 +175,7 @@ const App = () => {
 	);
 	const [showAssetSuggestions, setShowAssetSuggestions] = useState(false);
 	const [assetQuery, setAssetQuery] = useState('');
+	const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
 
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const activeRef = useRef(true);
@@ -128,10 +194,38 @@ const App = () => {
 	}, []);
 
 	useEffect(() => {
+		localStorage.setItem(sessionIdKey, sessionId);
+	}, [sessionId]);
+
+	useEffect(() => {
+		let canceled = false;
+		const loadAssets = async () => {
+			const stored = await chrome.storage.local.get(assetsStorageKey);
+			const nextAssets = Array.isArray(stored?.[assetsStorageKey])
+				? (stored[assetsStorageKey] as AssetFile[])
+				: [];
+			if (!canceled) setAssets(nextAssets);
+		};
+		loadAssets();
+		return () => {
+			canceled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		const persistAssets = async () => {
+			await chrome.storage.local.set({ [assetsStorageKey]: assets });
+		};
+		persistAssets();
+	}, [assets]);
+
+	useEffect(() => {
+		setSessionLoaded(false);
 		try {
-			const raw = localStorage.getItem('agent_session_messages');
-			if (raw) {
-				setMessages(JSON.parse(raw));
+			const scopedKey = getSessionMessagesKey(sessionId);
+			const scopedRaw = localStorage.getItem(scopedKey);
+			if (scopedRaw) {
+				setMessages(JSON.parse(scopedRaw));
 			} else {
 				setMessages([
 					{
@@ -150,13 +244,16 @@ const App = () => {
 		} finally {
 			setSessionLoaded(true);
 		}
-	}, []);
+	}, [sessionId]);
 
 	useEffect(() => {
 		if (!sessionLoaded) return;
 		const snapshot = messages.slice(-200);
-		localStorage.setItem('agent_session_messages', JSON.stringify(snapshot));
-	}, [messages, sessionLoaded]);
+		localStorage.setItem(
+			getSessionMessagesKey(sessionId),
+			JSON.stringify(snapshot)
+		);
+	}, [messages, sessionLoaded, sessionId]);
 
 	useEffect(() => {
 		localStorage.setItem('agent_prompt_templates', JSON.stringify(templates));
@@ -167,8 +264,16 @@ const App = () => {
 	}, [activeTemplateId]);
 
 	useEffect(() => {
+		localStorage.setItem(mcpServersStorageKey, toMcpServersJsonText(mcpServers));
+	}, [mcpServers]);
+
+	useEffect(() => {
 		localStorage.setItem('agent_interaction_mode', interactionMode);
 	}, [interactionMode]);
+
+	useEffect(() => {
+		localStorage.setItem(uiZoomStorageKey, String(uiZoom));
+	}, [uiZoom]);
 
 	// Save settings
 	const saveSettings = () => {
@@ -200,9 +305,10 @@ const App = () => {
 			'agent_invalid_retry_max_ms',
 			String(Math.max(0, Math.floor(invalidRetryMaxMs)))
 		);
-		localStorage.removeItem('agent_vision_base_url');
-		localStorage.removeItem('agent_vision_api_key');
-		localStorage.removeItem('agent_vision_model');
+		localStorage.setItem(
+			'agent_max_consecutive_failures',
+			String(Math.max(1, Math.floor(maxConsecutiveFailures)))
+		);
 		setShowSettings(false);
 		addMessage('system', `Settings Saved. Model: ${modelName}`);
 	};
@@ -225,7 +331,70 @@ const App = () => {
 				content: 'Standalone Agent Ready. Configure settings first.',
 			},
 		]);
-		localStorage.removeItem('agent_session_messages');
+		localStorage.removeItem(getSessionMessagesKey(sessionId));
+		clearTabSessionState(sessionId);
+	};
+
+	const addMcpServerFromJson = () => {
+		const raw = mcpJsonInput.trim();
+		if (!raw) return;
+		try {
+			const parsedServers = parseMcpServersJsonInput(raw);
+			setMcpServers((prev) => {
+				const prevByName = new Map(prev.map((item) => [item.name, item]));
+				const nextServers = parsedServers.map((item) => {
+					const prevItem = prevByName.get(item.name);
+					return {
+						...item,
+						id: prevItem?.id || item.id,
+					};
+				});
+				localStorage.setItem(
+					mcpServersStorageKey,
+					toMcpServersJsonText(nextServers)
+				);
+				setMcpJsonInput(toMcpServersJsonText(nextServers));
+				return nextServers;
+			});
+			setMcpInputError('');
+			setShowAddMcp(false);
+			addMessage('system', `MCP servers saved (${parsedServers.length}).`);
+		} catch (e: any) {
+			setMcpInputError(e?.message || 'Invalid MCP JSON');
+		}
+	};
+
+	const toggleMcpServer = (id: string) => {
+		setMcpServers((prev) =>
+			prev.map((item) =>
+				item.id === id ? { ...item, enabled: !item.enabled } : item
+			)
+		);
+	};
+
+	const removeMcpServer = (id: string) => {
+		setMcpServers((prev) => prev.filter((item) => item.id !== id));
+	};
+
+	const startEditMcpServer = () => {
+		if (showAddMcp && mcpJsonInput.trim().length > 0) return;
+		setShowAddMcp(true);
+		setMcpInputError('');
+		setMcpJsonInput(toMcpServersJsonText(mcpServers));
+	};
+
+	const testMcpServer = async (server: McpServerConfig) => {
+		setMcpTestingById((prev) => ({ ...prev, [server.id]: true }));
+		setMcpTestResultById((prev) => ({ ...prev, [server.id]: '' }));
+		const result = await testMcpConnection(server);
+		setMcpTestResultById((prev) => ({ ...prev, [server.id]: result.message }));
+		setMcpTestingById((prev) => ({ ...prev, [server.id]: false }));
+		addMessage(
+			'system',
+			result.ok
+				? `MCP test passed: ${server.name} (${result.message})`
+				: `MCP test failed: ${server.name} (${result.message})`
+		);
 	};
 
 	const saveTemplate = () => {
@@ -305,6 +474,7 @@ const App = () => {
 				type: file.type || 'application/octet-stream',
 				size: file.size,
 				dataUrl,
+				source: 'uploaded',
 			});
 		}
 
@@ -363,7 +533,9 @@ const App = () => {
 	};
 
 	const startNewChat = () => {
-		clearSession();
+		const nextSessionId = createSessionId();
+		localStorage.setItem(sessionIdKey, nextSessionId);
+		setSessionId(nextSessionId);
 		setTask('');
 		setAttachedFiles([]);
 	};
@@ -393,8 +565,223 @@ const App = () => {
 	const buildAssetCatalog = () => {
 		if (assets.length === 0) return '';
 		return assets
-			.map((a) => `${a.name} (${a.type}, ${a.size} bytes)`)
+			.map(
+				(a) =>
+					`${a.name} (${a.type}, ${a.size} bytes, ${a.source || 'uploaded'})`
+			)
 			.join('\n');
+	};
+
+	const extractBase64FromDataUrl = (dataUrl: string) => {
+		const commaIndex = dataUrl.indexOf(',');
+		if (commaIndex === -1) return '';
+		return dataUrl.slice(commaIndex + 1).trim();
+	};
+
+	const toBase64Utf8 = (text: string) => {
+		const bytes = new TextEncoder().encode(text);
+		let binary = '';
+		for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+		return btoa(binary);
+	};
+
+	const toDataUrlFromBase64 = (base64: string, mimeType: string) =>
+		`data:${mimeType || 'application/octet-stream'};base64,${base64}`;
+
+	const decodeDataUrlText = (dataUrl: string) => {
+		try {
+			const base64 = extractBase64FromDataUrl(dataUrl);
+			if (!base64) return '';
+			const binary = atob(base64);
+			const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+			return new TextDecoder().decode(bytes);
+		} catch {
+			return '';
+		}
+	};
+
+	const normalizeAssetRef = (value: string) =>
+		value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+	const resolveAssetRef = (ref: string) => {
+		const raw = ref.trim();
+		if (!raw) return null;
+		const lower = raw.toLowerCase();
+		const normalized = normalizeAssetRef(raw);
+		const exact = assets.find((asset) => asset.name.trim().toLowerCase() === lower);
+		if (exact) return exact;
+		const normalizedExact = assets.find(
+			(asset) => normalizeAssetRef(asset.name) === normalized
+		);
+		if (normalizedExact) return normalizedExact;
+		const partial = assets.filter((asset) =>
+			normalizeAssetRef(asset.name).includes(normalized)
+		);
+		if (partial.length === 1) return partial[0];
+		return null;
+	};
+
+	const enrichMcpArgumentsWithAssets = (rawArgs: Record<string, unknown>) => {
+		const args = { ...rawArgs };
+		const generatedAssets: AssetFile[] = [];
+		const unresolvedRefs: string[] = [];
+		const canonicalAttachments: Array<{
+			filename: string;
+			content: string;
+			mimeType: string;
+		}> = [];
+
+		const addGeneratedAsset = (
+			filename: string,
+			mimeType: string,
+			base64Content: string
+		) => {
+			const cleanName = String(filename || 'generated.txt').trim();
+			const cleanMime = String(mimeType || 'text/plain').trim();
+			const dataUrl = toDataUrlFromBase64(base64Content, cleanMime);
+			generatedAssets.push({
+				id: `asset_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+				name: cleanName,
+				type: cleanMime,
+				size: Math.max(0, Math.floor((base64Content.length * 3) / 4)),
+				dataUrl,
+				source: 'generated',
+			});
+		};
+
+		const addCanonicalAttachment = (
+			filename: string,
+			content: string,
+			mimeType: string
+		) => {
+			const cleanFilename = String(filename || '').trim();
+			const cleanContent = String(content || '').trim();
+			const cleanMime = String(mimeType || 'application/octet-stream').trim();
+			if (!cleanFilename || !cleanContent) return;
+			canonicalAttachments.push({
+				filename: cleanFilename,
+				content: cleanContent,
+				mimeType: cleanMime,
+			});
+		};
+
+		const addAttachmentFromAsset = (
+			asset: AssetFile,
+			filenameOverride?: string,
+			mimeTypeOverride?: string
+		) => {
+			addCanonicalAttachment(
+				filenameOverride || asset.name,
+				extractBase64FromDataUrl(asset.dataUrl),
+				mimeTypeOverride || asset.type || 'application/octet-stream'
+			);
+		};
+
+		const tryResolveRefFromObject = (item: Record<string, unknown>) => {
+			const refKeys = ['assetName', 'asset', 'file', 'fileName', 'filename', 'name'];
+			for (const key of refKeys) {
+				if (typeof item[key] === 'string' && item[key]?.trim()) {
+					return String(item[key]);
+				}
+			}
+			return '';
+		};
+
+		const sourceAttachments = Array.isArray(args.attachments)
+			? args.attachments
+			: [];
+
+		sourceAttachments.forEach((item: any) => {
+			if (!item || typeof item !== 'object') return;
+			const filename = String(item.filename || item.fileName || item.name || '').trim();
+			const mimeType = String(item.mimeType || item.type || 'application/octet-stream').trim();
+			const textContent = String(item.textContent || item.text || '').trim();
+			const content = String(item.content || '').trim();
+			if (textContent) {
+				const generatedBase64 = toBase64Utf8(textContent);
+				const generatedName = filename || 'generated.txt';
+				const generatedMime = mimeType || 'text/plain';
+				addGeneratedAsset(generatedName, generatedMime, generatedBase64);
+				addCanonicalAttachment(generatedName, generatedBase64, generatedMime);
+				return;
+			}
+			if (content) {
+				addCanonicalAttachment(
+					filename || 'attachment.bin',
+					content,
+					mimeType || 'application/octet-stream'
+				);
+				return;
+			}
+			const ref = tryResolveRefFromObject(item);
+			if (ref) {
+				const asset = resolveAssetRef(ref);
+				if (!asset) {
+					unresolvedRefs.push(ref);
+					return;
+				}
+				addAttachmentFromAsset(asset, filename || undefined, mimeType || undefined);
+			}
+		});
+
+		if (typeof args.assetName === 'string' && args.assetName.trim()) {
+			const asset = resolveAssetRef(args.assetName);
+			if (!asset) {
+				unresolvedRefs.push(args.assetName);
+			} else {
+				addAttachmentFromAsset(asset);
+			}
+		}
+
+		if (Array.isArray(args.generatedFiles)) {
+			args.generatedFiles.forEach((item: any) => {
+				if (!item || typeof item !== 'object') return;
+				const filename = String(item.filename || item.name || 'generated.txt');
+				const text = String(item.textContent || item.text || '').trim();
+				if (!text) return;
+				const mimeType = String(item.mimeType || 'text/plain');
+				const content = toBase64Utf8(text);
+				addGeneratedAsset(filename, mimeType, content);
+				addCanonicalAttachment(filename, content, mimeType);
+			});
+		}
+
+		if (generatedAssets.length > 0) {
+			setAssets((prev) => [...prev, ...generatedAssets]);
+		}
+
+		const deduped = new Map<string, { filename: string; content: string; mimeType: string }>();
+		canonicalAttachments.forEach((item) => {
+			const key = `${item.filename}|${item.mimeType}|${item.content.length}`;
+			if (!deduped.has(key)) deduped.set(key, item);
+		});
+		const finalAttachments = Array.from(deduped.values());
+
+		if (unresolvedRefs.length > 0) {
+			return {
+				ok: false as const,
+				error: `Missing assets referenced by MCP_CALL: ${Array.from(new Set(unresolvedRefs)).join(', ')}`,
+			};
+		}
+		if (finalAttachments.some((item) => !item.content || item.content.trim().length === 0)) {
+			return { ok: false as const, error: 'One or more attachments resolved with empty content.' };
+		}
+
+		const nextArgs = { ...args };
+		if (finalAttachments.length > 0) {
+			nextArgs.attachments = finalAttachments;
+		}
+		delete (nextArgs as any).generatedFiles;
+		return {
+			ok: true as const,
+			args: nextArgs,
+			attachmentSummary: finalAttachments
+				.map(
+					(item) =>
+						`${item.filename} (${item.mimeType}, base64:${item.content.length})`
+				)
+				.join('; '),
+		};
 	};
 
 	const hashString = (input: string) => {
@@ -430,16 +817,165 @@ const App = () => {
 	};
 
 	const parseAgentDecision = (raw: string) => {
+		const stripThinkBlocks = (input: string) =>
+			input.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+		const collectBalancedObjects = (input: string) => {
+			const found: string[] = [];
+			let start = -1;
+			let depth = 0;
+			let inString = false;
+			let escape = false;
+			for (let i = 0; i < input.length; i++) {
+				const ch = input[i];
+				if (inString) {
+					if (escape) {
+						escape = false;
+						continue;
+					}
+					if (ch === '\\') {
+						escape = true;
+						continue;
+					}
+					if (ch === '"') {
+						inString = false;
+					}
+					continue;
+				}
+				if (ch === '"') {
+					inString = true;
+					continue;
+				}
+				if (ch === '{') {
+					if (depth === 0) start = i;
+					depth += 1;
+				} else if (ch === '}') {
+					if (depth > 0) depth -= 1;
+					if (depth === 0 && start !== -1) {
+						found.push(input.slice(start, i + 1));
+						start = -1;
+					}
+				}
+			}
+			return found;
+		};
+		const extractBalancedObjectFrom = (input: string, startIndex: number) => {
+			if (startIndex < 0 || startIndex >= input.length || input[startIndex] !== '{')
+				return '';
+			let depth = 0;
+			let inString = false;
+			let escape = false;
+			for (let i = startIndex; i < input.length; i++) {
+				const ch = input[i];
+				if (inString) {
+					if (escape) {
+						escape = false;
+						continue;
+					}
+					if (ch === '\\') {
+						escape = true;
+						continue;
+					}
+					if (ch === '"') inString = false;
+					continue;
+				}
+				if (ch === '"') {
+					inString = true;
+					continue;
+				}
+				if (ch === '{') depth += 1;
+				if (ch === '}') {
+					depth -= 1;
+					if (depth === 0) return input.slice(startIndex, i + 1);
+				}
+			}
+			return '';
+		};
+		const extractObjectAroundAction = (input: string) => {
+			const actionIndex = input.indexOf('"action"');
+			if (actionIndex === -1) return '';
+			let start = -1;
+			let inString = false;
+			let escape = false;
+			for (let i = actionIndex; i >= 0; i--) {
+				const ch = input[i];
+				if (inString) {
+					if (escape) {
+						escape = false;
+						continue;
+					}
+					if (ch === '\\') {
+						escape = true;
+						continue;
+					}
+					if (ch === '"') inString = false;
+					continue;
+				}
+				if (ch === '"') {
+					inString = true;
+					continue;
+				}
+				if (ch === '{') {
+					start = i;
+					break;
+				}
+			}
+			if (start === -1) return '';
+			let depth = 0;
+			inString = false;
+			escape = false;
+			for (let i = start; i < input.length; i++) {
+				const ch = input[i];
+				if (inString) {
+					if (escape) {
+						escape = false;
+						continue;
+					}
+					if (ch === '\\') {
+						escape = true;
+						continue;
+					}
+					if (ch === '"') inString = false;
+					continue;
+				}
+				if (ch === '"') {
+					inString = true;
+					continue;
+				}
+				if (ch === '{') depth += 1;
+				if (ch === '}') {
+					depth -= 1;
+					if (depth === 0) return input.slice(start, i + 1);
+				}
+			}
+			return '';
+		};
+		const fallbackParseByFields = (input: string) => {
+			const actionMatch = input.match(/"action"\s*:\s*"([^"]+)"/i);
+			if (!actionMatch?.[1]) return null;
+			const action = actionMatch[1];
+			const paramsKeyIndex = input.search(/"params"\s*:/i);
+			if (paramsKeyIndex === -1) return { action, params: {} };
+			const braceIndex = input.indexOf('{', paramsKeyIndex);
+			if (braceIndex === -1) return { action, params: {} };
+			const paramsRaw = extractBalancedObjectFrom(input, braceIndex);
+			if (!paramsRaw) return { action, params: {} };
+			const direct = tryParseJson(paramsRaw);
+			if (direct && typeof direct === 'object') return { action, params: direct };
+			const repaired = tryParseJson(repairJson(paramsRaw));
+			if (repaired && typeof repaired === 'object') return { action, params: repaired };
+			return { action, params: {} };
+		};
+
+		const cleanedRaw = stripThinkBlocks(raw);
 		const candidates: string[] = [];
-		const fenceMatches = raw.matchAll(/```json\s*([\s\S]*?)\s*```/gi);
+		const fenceMatches = cleanedRaw.matchAll(/```json\s*([\s\S]*?)\s*```/gi);
 		for (const match of fenceMatches) {
 			if (match[1]) candidates.push(match[1]);
 		}
-		const firstBrace = raw.indexOf('{');
-		const lastBrace = raw.lastIndexOf('}');
-		if (firstBrace !== -1 && lastBrace > firstBrace) {
-			candidates.push(raw.slice(firstBrace, lastBrace + 1));
-		}
+		candidates.push(...collectBalancedObjects(cleanedRaw));
+		const aroundAction = extractObjectAroundAction(cleanedRaw);
+		if (aroundAction) candidates.push(aroundAction);
+		candidates.push(cleanedRaw);
 		candidates.push(raw);
 
 		for (const candidate of candidates) {
@@ -447,7 +983,13 @@ const App = () => {
 			if (direct?.action) return direct;
 			const repaired = tryParseJson(repairJson(candidate));
 			if (repaired?.action) return repaired;
+			const fallback = fallbackParseByFields(candidate);
+			if (fallback?.action) return fallback;
 		}
+		const cleanedFallback = fallbackParseByFields(cleanedRaw);
+		if (cleanedFallback?.action) return cleanedFallback;
+		const rawFallback = fallbackParseByFields(raw);
+		if (rawFallback?.action) return rawFallback;
 		return null;
 	};
 
@@ -463,6 +1005,15 @@ const App = () => {
 			COMPLETE: 'DONE',
 			ANSWER: 'ASK',
 			UPLOAD: 'UPLOAD_ASSET',
+			OPEN_NEW_TAB: 'OPEN_TAB',
+			NEW_TAB: 'OPEN_TAB',
+			OPEN_URL: 'NAVIGATE',
+			CHANGE_TAB: 'SWITCH_TAB',
+			FOCUS_TAB: 'SWITCH_TAB',
+			CLOSE_CURRENT_TAB: 'CLOSE_TAB',
+			CLOSE_OTHER_TABS: 'CLOSE_EXTRA_TABS',
+			TOOL_CALL: 'MCP_CALL',
+			CALL_TOOL: 'MCP_CALL',
 		};
 		const rawAction = String(decision.action || '')
 			.trim()
@@ -488,6 +1039,12 @@ const App = () => {
 			'summary',
 			'target',
 			'field',
+			'tabId',
+			'urlContains',
+			'background',
+			'serverId',
+			'tool',
+			'arguments',
 		];
 		topLevelKeys.forEach((key) => {
 			if (params[key] == null && decision[key] != null) params[key] = decision[key];
@@ -502,6 +1059,17 @@ const App = () => {
 			params.text = params.value;
 		}
 		if (params.id != null) params.id = String(params.id);
+		if (params.tabId != null) {
+			const nextTabId = Number(params.tabId);
+			params.tabId = Number.isFinite(nextTabId) ? nextTabId : params.tabId;
+		}
+		if (params.index != null) {
+			const nextIndex = Number(params.index);
+			params.index = Number.isFinite(nextIndex) ? nextIndex : params.index;
+		}
+		if (params.background != null) {
+			params.background = Boolean(params.background);
+		}
 		if (params.key == null && action === 'KEY') params.key = 'Enter';
 		if (params.direction == null && action === 'SCROLL') params.direction = 'down';
 		if (params.ms == null && action === 'WAIT') params.ms = 1000;
@@ -596,12 +1164,34 @@ const App = () => {
 				return typeof params.key === 'string' && params.key.trim()
 					? ''
 					: 'KEY requires params.key';
-			case 'NAVIGATE':
-				return typeof params.url === 'string' && params.url.trim()
-					? ''
-					: 'NAVIGATE requires params.url';
-			case 'WAIT':
-				return '';
+				case 'NAVIGATE':
+					return typeof params.url === 'string' && params.url.trim()
+						? ''
+						: 'NAVIGATE requires params.url';
+				case 'OPEN_TAB':
+					return typeof params.url === 'string' && params.url.trim()
+						? ''
+						: 'OPEN_TAB requires params.url';
+				case 'SWITCH_TAB':
+					return typeof params.tabId === 'number' ||
+						typeof params.index === 'number' ||
+						(typeof params.urlContains === 'string' &&
+							params.urlContains.trim().length > 0)
+						? ''
+						: 'SWITCH_TAB requires params.tabId or params.index or params.urlContains';
+				case 'CLOSE_TAB':
+					return '';
+				case 'CLOSE_EXTRA_TABS':
+					return '';
+				case 'MCP_CALL':
+					return typeof params.serverId === 'string' &&
+						params.serverId.trim().length > 0 &&
+						typeof params.tool === 'string' &&
+						params.tool.trim().length > 0
+						? ''
+						: 'MCP_CALL requires params.serverId and params.tool';
+				case 'WAIT':
+					return '';
 			case 'ASK':
 				return typeof params.question === 'string' && params.question.trim()
 					? ''
@@ -657,6 +1247,10 @@ const App = () => {
 			0,
 			Math.floor(invalidRetryMaxMs)
 		);
+		const runtimeMaxConsecutiveFailures = Math.max(
+			1,
+			Math.floor(maxConsecutiveFailures)
+		);
 
 		// Initial Brain
 		const brain = new AgentBrain(
@@ -681,6 +1275,9 @@ const App = () => {
 		const recentActions: string[] = [];
 		let failureCount = 0;
 		let invalidResponseCount = 0;
+		const tabSession = createTabSessionManager(sessionId);
+		const mcpTools = await listMcpTools(mcpServers.filter((server) => server.enabled));
+		const mcpCatalog = buildMcpToolCatalogText(mcpTools);
 		activeRef.current = true;
 		(window as any).stopAgent = () => {
 			activeRef.current = false;
@@ -688,13 +1285,17 @@ const App = () => {
 		};
 
 		try {
+			const initialTab = await getCurrentTab();
+			if (!initialTab?.id) throw new Error('No active tab');
+			await tabSession.beginRun(initialTab.id);
+
 			while (activeRef.current && stepCount < runtimeMaxSteps) {
-				const tab = await getCurrentTab();
-				if (!tab?.id) throw new Error('No active tab');
+				const tabId = await tabSession.ensureCurrentTabActive();
+				if (!tabId) throw new Error('No managed tab available');
 
 				let state: any = null;
 				try {
-					state = await chrome.tabs.sendMessage(tab.id, {
+					state = await chrome.tabs.sendMessage(tabId, {
 						type: 'GET_CONTENT',
 					});
 				} catch (e) {
@@ -707,6 +1308,7 @@ const App = () => {
 
 				if (!activeRef.current) break;
 
+				const tabContext = await tabSession.buildTabContext();
 				const pageHash = hashString(state.content || '');
 				pageHistory.push(pageHash);
 				if (pageHistory.length > 6) pageHistory.shift();
@@ -723,6 +1325,8 @@ const App = () => {
 						fileContext,
 						elementMap,
 						assetCatalog,
+						tabContext,
+						mcpCatalog,
 						supportsVision,
 						screenshotDataUrl: screenshot || undefined,
 						viewport: state.viewport,
@@ -786,6 +1390,11 @@ const App = () => {
 					'SELECT_ID',
 					'UPLOAD_ASSET',
 					'KEY',
+					'OPEN_TAB',
+					'SWITCH_TAB',
+					'CLOSE_TAB',
+					'CLOSE_EXTRA_TABS',
+					'MCP_CALL',
 					'DONE',
 					'ASK',
 				];
@@ -847,27 +1456,84 @@ const App = () => {
 					break;
 				}
 
-				const result: any = await chrome.tabs.sendMessage(tab.id, {
-					type: 'EXECUTE_ACTION',
-					action: normalized,
-					assets,
-				});
+				let actionResult = '';
+				if (normalized.action === 'OPEN_TAB') {
+					actionResult = await tabSession.openTab(
+						String(normalized.params.url),
+						Boolean(normalized.params.background)
+					);
+				} else if (normalized.action === 'SWITCH_TAB') {
+					actionResult = await tabSession.switchTab({
+						tabId:
+							typeof normalized.params.tabId === 'number'
+								? normalized.params.tabId
+								: undefined,
+						index:
+							typeof normalized.params.index === 'number'
+								? normalized.params.index
+								: undefined,
+						urlContains:
+							typeof normalized.params.urlContains === 'string'
+								? normalized.params.urlContains
+								: undefined,
+					});
+				} else if (normalized.action === 'CLOSE_TAB') {
+					actionResult = await tabSession.closeTab(
+						typeof normalized.params.tabId === 'number'
+							? normalized.params.tabId
+							: undefined
+					);
+				} else if (normalized.action === 'CLOSE_EXTRA_TABS') {
+					actionResult = await tabSession.closeExtraTabs();
+				} else if (normalized.action === 'MCP_CALL') {
+					const enrichment = enrichMcpArgumentsWithAssets(
+						normalized.params.arguments &&
+							typeof normalized.params.arguments === 'object'
+							? normalized.params.arguments
+							: {}
+					);
+					if (!enrichment.ok) {
+						actionResult = `Failed MCP_CALL preflight: ${enrichment.error}`;
+					} else {
+						if (enrichment.attachmentSummary) {
+							addMessage(
+								'system',
+								`MCP attachment preflight: ${enrichment.attachmentSummary}`
+							);
+						}
+					actionResult = await callMcpTool(
+						mcpServers,
+						String(normalized.params.serverId || ''),
+						String(normalized.params.tool || ''),
+						enrichment.args
+					);
+					}
+				} else {
+					const targetTabId = await tabSession.getTargetTabId();
+					if (!targetTabId) throw new Error('No target tab for action');
+					const result: any = await chrome.tabs.sendMessage(targetTabId, {
+						type: 'EXECUTE_ACTION',
+						action: normalized,
+						assets,
+					});
+					actionResult = result?.result || 'No result';
+				}
 
-				addMessage('system', `Result: ${result.result}`);
-				actionHistory.push(`Result: ${result.result}`);
+				addMessage('system', `Result: ${actionResult}`);
+				actionHistory.push(`Result: ${actionResult}`);
 				if (
-					typeof result.result === 'string' &&
-					/(Failed|Error)/i.test(result.result)
+					typeof actionResult === 'string' &&
+					/(Failed|Error|Refused)/i.test(actionResult)
 				) {
 					failureCount += 1;
 				} else {
 					failureCount = 0;
 				}
-				if (failureCount >= 3) {
+				if (failureCount >= runtimeMaxConsecutiveFailures) {
 					activeRef.current = false;
 					addMessage(
 						'system',
-						'Too many failures. Please adjust the task or provide guidance.'
+						`Too many failures (${runtimeMaxConsecutiveFailures}). Please adjust the task or provide guidance.`
 					);
 					break;
 				}
@@ -1008,6 +1674,22 @@ const App = () => {
 			input.setSelectionRange(pos, pos);
 		});
 	};
+
+	const zoomOut = () =>
+		setUiZoom((prev) =>
+			Math.max(
+				uiZoomMin,
+				Math.round((prev - uiZoomStep + Number.EPSILON) * 100) / 100
+			)
+		);
+
+	const zoomIn = () =>
+		setUiZoom((prev) =>
+			Math.min(
+				uiZoomMax,
+				Math.round((prev + uiZoomStep + Number.EPSILON) * 100) / 100
+			)
+		);
 
 	const activeTemplateDisplay = templates.find(
 		(t) => t.id === activeTemplateId
@@ -1225,10 +1907,150 @@ const App = () => {
 													}}
 												/>
 											</div>
+											<div>
+												<label className={`block text-xs mb-1 ${labelClass}`}>
+													Max Consecutive Failures
+												</label>
+												<input
+													type='number'
+													min={1}
+													className={inputClass}
+													value={maxConsecutiveFailures}
+													onChange={(e) => {
+														const next = Number(e.target.value);
+														setMaxConsecutiveFailures(
+															Number.isFinite(next) ? next : 1
+														);
+													}}
+												/>
+											</div>
 										</div>
-									</div>
-								</div>
 							</div>
+						</div>
+					</div>
+
+					<div className={`${panelClass} rounded-lg p-4`}>
+						<div className='text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'>
+							MCP Servers
+						</div>
+						<div className='space-y-3'>
+							<button
+								onClick={() => {
+									setShowAddMcp((v) => !v);
+									setMcpInputError('');
+									setMcpJsonInput(toMcpServersJsonText(mcpServers));
+								}}
+								className={`text-xs px-3 py-2 rounded border ${secondaryButtonClass}`}
+							>
+								Add MCP
+							</button>
+							{showAddMcp ? (
+								<div className='space-y-2'>
+									<textarea
+										className={inputClass}
+										rows={12}
+										placeholder={`{\n  "mcpServers": {\n    "gmail-mcp-server": {\n      "url": "http://192.168.0.4:5000/sse",\n      "headers": {\n        "Authorization": "Bearer 123456"\n      }\n    }\n  }\n}`}
+										value={mcpJsonInput}
+										onChange={(e) => setMcpJsonInput(e.target.value)}
+									/>
+									<div className='flex items-center gap-2'>
+										<button
+											onClick={addMcpServerFromJson}
+											className='bg-gpt-accent hover:bg-gpt-accent-hover text-white rounded px-3 py-1.5 text-xs'
+										>
+											Save MCP JSON
+										</button>
+										<button
+											onClick={() => {
+												setShowAddMcp(false);
+												setMcpJsonInput('');
+												setMcpInputError('');
+											}}
+											className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
+										>
+											Cancel
+										</button>
+									</div>
+									{mcpInputError ? (
+										<div className='text-xs text-red-400'>{mcpInputError}</div>
+									) : null}
+								</div>
+							) : null}
+
+							{mcpServers.length === 0 ? (
+								<div className={`text-xs ${subtleClass}`}>
+									No MCP servers configured.
+								</div>
+							) : (
+								<div className='space-y-2'>
+									{mcpServers.map((server) => (
+										<div
+											key={server.id}
+											className={`rounded px-2 py-2 text-xs border ${
+												isDark
+													? 'bg-gpt-surface border-gpt-border'
+													: 'bg-slate-100 border-slate-200'
+											}`}
+										>
+											<div className='flex items-center justify-between gap-2'>
+												<div className='truncate'>
+													<div className='font-semibold truncate'>{server.name}</div>
+													<div className={subtleClass}>{server.url}</div>
+													{mcpTestResultById[server.id] ? (
+														<div
+															className={`text-[11px] mt-1 ${
+																mcpTestResultById[server.id]
+																	.startsWith('Connected')
+																	? 'text-emerald-400'
+																	: 'text-red-400'
+															}`}
+														>
+															{mcpTestResultById[server.id]}
+														</div>
+													) : null}
+												</div>
+												<div className='flex items-center gap-2'>
+													<button
+														onClick={startEditMcpServer}
+														className={`text-xs px-2 py-1 rounded border ${secondaryButtonClass}`}
+														title='Edit MCP server JSON'
+													>
+														Edit
+													</button>
+													<button
+														onClick={() => testMcpServer(server)}
+														disabled={Boolean(mcpTestingById[server.id])}
+														className={`text-xs px-2 py-1 rounded border ${secondaryButtonClass} disabled:opacity-60`}
+														title='Test MCP connection'
+													>
+														{mcpTestingById[server.id] ? 'Testing...' : 'Test'}
+													</button>
+													<label
+														className={`flex items-center gap-1 ${subtleClass}`}
+														title='Enable or disable this MCP server'
+													>
+														<input
+															type='checkbox'
+															checked={server.enabled}
+															onChange={() => toggleMcpServer(server.id)}
+														/>
+														Enabled
+													</label>
+													<button
+														onClick={() => removeMcpServer(server.id)}
+														className='text-xs px-2 py-1 rounded border border-red-400/60 text-red-300 hover:bg-red-500/15'
+														title='Remove MCP server'
+													>
+														Delete
+													</button>
+												</div>
+											</div>
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+					</div>
 
 					<div className={`${panelClass} rounded-lg p-4`}>
 						<div className='text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'>
@@ -1255,20 +2077,54 @@ const App = () => {
 									{assets.map((asset) => (
 										<div
 											key={asset.id}
-											className={`flex items-center justify-between rounded px-2 py-2 text-xs ${
+											className={`rounded px-2 py-2 text-xs ${
 												isDark
 													? 'bg-gpt-surface border border-gpt-border'
 													: 'bg-slate-100 border border-slate-200'
 											}`}
 										>
-											<div className='truncate'>{asset.name}</div>
-											<button
-												onClick={() => removeAsset(asset.id)}
-												className='text-red-400 hover:text-red-300'
-												title='Remove'
-											>
-												✕
-											</button>
+											<div className='flex items-center justify-between gap-2'>
+												<div className='truncate'>
+													<div className='truncate'>{asset.name}</div>
+													<div className={`${subtleClass} text-[11px]`}>
+														{asset.type} | {asset.size} bytes |{' '}
+														{asset.source || 'uploaded'}
+													</div>
+												</div>
+												<div className='flex items-center gap-2'>
+													{asset.type.startsWith('text/') ? (
+														<button
+															onClick={() =>
+																setExpandedAssetId((prev) =>
+																	prev === asset.id ? null : asset.id
+																)
+															}
+															className={`text-xs px-2 py-1 rounded border ${secondaryButtonClass}`}
+															title='View text content'
+														>
+															{expandedAssetId === asset.id ? 'Hide' : 'View'}
+														</button>
+													) : null}
+													<button
+														onClick={() => removeAsset(asset.id)}
+														className='text-red-400 hover:text-red-300'
+														title='Remove'
+													>
+														✕
+													</button>
+												</div>
+											</div>
+											{expandedAssetId === asset.id ? (
+												<pre
+													className={`mt-2 p-2 rounded whitespace-pre-wrap break-words text-[11px] max-h-44 overflow-y-auto ${
+														isDark
+															? 'bg-black/20 border border-gpt-border'
+															: 'bg-white border border-slate-200'
+													}`}
+												>
+													{decodeDataUrlText(asset.dataUrl)}
+												</pre>
+											) : null}
 										</div>
 									))}
 								</div>
@@ -1303,7 +2159,7 @@ const App = () => {
 			className={`w-full h-screen flex flex-col font-sans ${
 				isDark ? 'bg-gpt-canvas text-gpt-text' : 'bg-slate-100 text-slate-900'
 			}`}
-			style={{ colorScheme: isDark ? 'dark' : 'light' }}
+			style={{ colorScheme: isDark ? 'dark' : 'light', zoom: uiZoom }}
 		>
 			<div
 				className={`p-4 border-b ${
@@ -1333,6 +2189,28 @@ const App = () => {
 					</h1>
 				</div>
 				<div className='flex gap-2'>
+					<button
+						onClick={zoomOut}
+						className={`text-xs border rounded px-2 py-1 ${
+							isDark
+								? 'text-gpt-muted border-gpt-border hover:text-gpt-text'
+								: 'text-gray-600 border-slate-200 hover:text-gray-900'
+						}`}
+						title='Zoom out'
+					>
+						🔍−
+					</button>
+					<button
+						onClick={zoomIn}
+						className={`text-xs border rounded px-2 py-1 ${
+							isDark
+								? 'text-gpt-muted border-gpt-border hover:text-gpt-text'
+								: 'text-gray-600 border-slate-200 hover:text-gray-900'
+						}`}
+						title='Zoom in'
+					>
+						🔍+
+					</button>
 					{isRunning && (
 						<button
 							onClick={() =>
