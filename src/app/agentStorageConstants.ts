@@ -1,0 +1,10 @@
+export const sessionIdKey = 'agent_active_session_id';
+export const assetsStorageKey = 'agent_assets_v1';
+export const mcpServersStorageKey = 'agent_mcp_servers';
+export const userSkillsStorageKey = 'agent_user_skills_v1';
+export const userContextsStorageKey = 'agent_user_contexts_v1';
+export const uiZoomStorageKey = 'agent_ui_zoom';
+export const uiZoomMin = 0.7;
+export const uiZoomMax = 1.8;
+export const uiZoomStep = 0.1;
+export const uiZoomDefault = 1;
