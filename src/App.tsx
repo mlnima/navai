@@ -20,6 +20,7 @@ import {
 interface Message {
 	role: 'user' | 'agent' | 'system';
 	content: string;
+	action?: 'continue_agent';
 }
 
 interface PromptTemplate {
@@ -46,11 +47,59 @@ interface AssetFile {
 	source?: 'uploaded' | 'generated';
 }
 
+interface AgentSkill {
+	id: string;
+	name: string;
+	content: string;
+	source: 'user' | 'predefined';
+	filePath?: string;
+}
+
+interface UserContextEntry {
+	id: string;
+	name: string;
+	content: string;
+}
+
+const normalizeSkillKey = (value: string) =>
+	value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
 const sessionIdKey = 'agent_active_session_id';
 const getSessionMessagesKey = (sessionId: string) =>
 	`agent_session_messages_${sessionId}`;
 const assetsStorageKey = 'agent_assets_v1';
 const mcpServersStorageKey = 'agent_mcp_servers';
+const userSkillsStorageKey = 'agent_user_skills_v1';
+const userContextsStorageKey = 'agent_user_contexts_v1';
+const defaultSkillTemplate = `---
+name: your-skill-name
+description: what this skill does and when to use it
+---
+
+# Purpose
+
+
+
+# When to use
+
+- 
+
+# Inputs
+
+- 
+
+# Steps
+
+1. 
+
+# Output
+
+
+
+# Notes
+
+- 
+`;
 const uiZoomStorageKey = 'agent_ui_zoom';
 const uiZoomMin = 0.7;
 const uiZoomMax = 1.8;
@@ -65,6 +114,83 @@ const resolveInitialSessionId = () => {
 	localStorage.setItem(sessionIdKey, next);
 	return next;
 };
+
+const iconStrokeClass = 'stroke-current';
+
+const ZoomOutIcon = () => (
+	<svg viewBox='0 0 24 24' fill='none' className='h-5 w-5 shrink-0'>
+		<circle className={iconStrokeClass} cx='11' cy='11' r='7' strokeWidth='1.8' />
+		<path className={iconStrokeClass} d='M8.5 11h5' strokeWidth='1.8' strokeLinecap='round' />
+		<path className={iconStrokeClass} d='M16.5 16.5L21 21' strokeWidth='1.8' strokeLinecap='round' />
+	</svg>
+);
+
+const ZoomInIcon = () => (
+	<svg viewBox='0 0 24 24' fill='none' className='h-5 w-5 shrink-0'>
+		<circle className={iconStrokeClass} cx='11' cy='11' r='7' strokeWidth='1.8' />
+		<path className={iconStrokeClass} d='M8.5 11h5' strokeWidth='1.8' strokeLinecap='round' />
+		<path className={iconStrokeClass} d='M11 8.5v5' strokeWidth='1.8' strokeLinecap='round' />
+		<path className={iconStrokeClass} d='M16.5 16.5L21 21' strokeWidth='1.8' strokeLinecap='round' />
+	</svg>
+);
+
+const TemplatesIcon = () => (
+	<svg viewBox='0 0 24 24' fill='none' className='h-5 w-5 shrink-0'>
+		<rect className={iconStrokeClass} x='4' y='4' width='16' height='16' rx='3' strokeWidth='1.8' />
+		<path className={iconStrokeClass} d='M8 9h8M8 12h8M8 15h5' strokeWidth='1.8' strokeLinecap='round' />
+	</svg>
+);
+
+const HistoryIcon = () => (
+	<svg viewBox='0 0 24 24' fill='none' className='h-5 w-5 shrink-0'>
+		<path className={iconStrokeClass} d='M4 12a8 8 0 1 0 2.3-5.7' strokeWidth='1.8' strokeLinecap='round' />
+		<path className={iconStrokeClass} d='M4 5v4h4' strokeWidth='1.8' strokeLinecap='round' />
+		<path className={iconStrokeClass} d='M12 8v4l2.5 1.5' strokeWidth='1.8' strokeLinecap='round' />
+	</svg>
+);
+
+const NewChatIcon = () => (
+	<svg viewBox='0 0 24 24' fill='none' className='h-5 w-5 shrink-0'>
+		<rect className={iconStrokeClass} x='4' y='4' width='16' height='16' rx='3' strokeWidth='1.8' />
+		<path className={iconStrokeClass} d='M12 8v8M8 12h8' strokeWidth='1.8' strokeLinecap='round' />
+	</svg>
+);
+
+const SettingsIcon = () => (
+	<svg viewBox='0 0 24 24' fill='none' className='h-5 w-5 shrink-0'>
+		<circle className={iconStrokeClass} cx='12' cy='12' r='2.4' strokeWidth='1.8' />
+		<path
+			className={iconStrokeClass}
+			d='M19.2 12a7.4 7.4 0 0 0-.1-1.3l2-1.5-2-3.4-2.4 1a7.6 7.6 0 0 0-2.2-1.3L14.2 3h-4.4l-.3 2.5a7.6 7.6 0 0 0-2.2 1.3l-2.4-1-2 3.4 2 1.5A7.4 7.4 0 0 0 4.8 12c0 .4 0 .9.1 1.3l-2 1.5 2 3.4 2.4-1a7.6 7.6 0 0 0 2.2 1.3l.3 2.5h4.4l.3-2.5a7.6 7.6 0 0 0 2.2-1.3l2.4 1 2-3.4-2-1.5c.1-.4.1-.9.1-1.3Z'
+			strokeWidth='1.3'
+			strokeLinecap='round'
+		/>
+	</svg>
+);
+
+const MoreVerticalIcon = () => (
+	<svg viewBox='0 0 24 24' fill='currentColor' className='h-4 w-4 shrink-0'>
+		<circle cx='12' cy='5' r='1.6' />
+		<circle cx='12' cy='12' r='1.6' />
+		<circle cx='12' cy='19' r='1.6' />
+	</svg>
+);
+
+const ChevronIcon = ({ open }: { open: boolean }) => (
+	<svg
+		viewBox='0 0 24 24'
+		fill='none'
+		className={`h-4 w-4 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+	>
+		<path
+			className={iconStrokeClass}
+			d='M6 9l6 6 6-6'
+			strokeWidth='1.8'
+			strokeLinecap='round'
+			strokeLinejoin='round'
+		/>
+	</svg>
+);
 
 const App = () => {
 	const [task, setTask] = useState('');
@@ -163,6 +289,16 @@ const App = () => {
 	const [sessionId, setSessionId] = useState(() => resolveInitialSessionId());
 	const [showTemplatePanel, setShowTemplatePanel] = useState(false);
 	const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+	const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false);
+	const [isMcpSettingsOpen, setIsMcpSettingsOpen] = useState(false);
+	const [isAssetsSettingsOpen, setIsAssetsSettingsOpen] = useState(false);
+	const [isAgentCreatedAssetsOpen, setIsAgentCreatedAssetsOpen] = useState(
+		false
+	);
+	const [isUserContextSettingsOpen, setIsUserContextSettingsOpen] = useState(
+		false
+	);
+	const [isSkillsSettingsOpen, setIsSkillsSettingsOpen] = useState(false);
 	const [uiZoom, setUiZoom] = useState(() => {
 		const raw = Number(localStorage.getItem(uiZoomStorageKey));
 		if (!Number.isFinite(raw)) return uiZoomDefault;
@@ -173,13 +309,84 @@ const App = () => {
 	const [openTemplateMenuId, setOpenTemplateMenuId] = useState<string | null>(
 		null
 	);
+	const [openMcpMenuId, setOpenMcpMenuId] = useState<string | null>(null);
+	const [openAssetMenuId, setOpenAssetMenuId] = useState<string | null>(null);
 	const [showAssetSuggestions, setShowAssetSuggestions] = useState(false);
 	const [assetQuery, setAssetQuery] = useState('');
 	const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
+	const [userSkills, setUserSkills] = useState<AgentSkill[]>(() => {
+		try {
+			const raw = localStorage.getItem(userSkillsStorageKey);
+			if (!raw) return [];
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) return [];
+			return parsed
+				.filter(
+					(item) =>
+						item &&
+						typeof item === 'object' &&
+						typeof item.id === 'string' &&
+						typeof item.name === 'string' &&
+						typeof item.content === 'string'
+				)
+				.map((item: any) => ({
+					id: String(item.id),
+					name: String(item.name),
+					content: String(item.content),
+					source: 'user' as const,
+				}));
+		} catch {
+			return [];
+		}
+	});
+	const [predefinedSkills, setPredefinedSkills] = useState<AgentSkill[]>([]);
+	const [showSkillForm, setShowSkillForm] = useState(false);
+	const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
+	const [skillContent, setSkillContent] = useState(defaultSkillTemplate);
+	const [openSkillMenuId, setOpenSkillMenuId] = useState<string | null>(null);
+	const [userContexts, setUserContexts] = useState<UserContextEntry[]>(() => {
+		try {
+			const raw = localStorage.getItem(userContextsStorageKey);
+			if (!raw) return [];
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) return [];
+			return parsed
+				.filter(
+					(item) =>
+						item &&
+						typeof item === 'object' &&
+						typeof item.id === 'string' &&
+						typeof item.name === 'string' &&
+						typeof item.content === 'string'
+				)
+				.map((item: any) => ({
+					id: String(item.id),
+					name: String(item.name),
+					content: String(item.content),
+				}));
+		} catch {
+			return [];
+		}
+	});
+	const [selectedUserContextIds, setSelectedUserContextIds] = useState<string[]>(
+		[]
+	);
+	const [showUserContextPicker, setShowUserContextPicker] = useState(false);
+	const [showUserContextForm, setShowUserContextForm] = useState(false);
+	const [editingUserContextId, setEditingUserContextId] = useState<string | null>(
+		null
+	);
+	const [userContextName, setUserContextName] = useState('');
+	const [userContextContent, setUserContextContent] = useState('');
+	const [openUserContextMenuId, setOpenUserContextMenuId] = useState<
+		string | null
+	>(null);
 
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const activeRef = useRef(true);
-	const inputRef = useRef<HTMLInputElement>(null);
+	const inputRef = useRef<HTMLTextAreaElement>(null);
+	const continueResolverRef = useRef<(() => void) | null>(null);
+	const [waitingForUserAction, setWaitingForUserAction] = useState(false);
 
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -270,6 +477,54 @@ const App = () => {
 	useEffect(() => {
 		localStorage.setItem('agent_interaction_mode', interactionMode);
 	}, [interactionMode]);
+
+	useEffect(() => {
+		let canceled = false;
+		const loadPredefinedSkillsIndex = async () => {
+			try {
+				const response = await fetch('/skills/index.json');
+				if (!response.ok) return;
+				const parsed = await response.json();
+				if (!Array.isArray(parsed) || canceled) return;
+				const fromFile: AgentSkill[] = parsed
+					.filter(
+						(item) =>
+							item &&
+							typeof item === 'object' &&
+							typeof item.name === 'string' &&
+							typeof item.path === 'string' &&
+							item.name.trim().length > 0 &&
+							item.path.trim().length > 0
+					)
+					.map((item: any, index: number) => ({
+						id: `skill_predefined_${index}_${normalizeSkillKey(String(item.name))}`,
+						name: String(item.name).trim(),
+						content: '',
+						source: 'predefined' as const,
+						filePath: String(item.path).trim(),
+					}));
+				if (canceled) return;
+				setPredefinedSkills(fromFile);
+			} catch {
+				// Ignore when index is missing.
+			}
+		};
+		loadPredefinedSkillsIndex();
+		return () => {
+			canceled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		localStorage.setItem(userSkillsStorageKey, JSON.stringify(userSkills));
+	}, [userSkills]);
+
+	useEffect(() => {
+		localStorage.setItem(userContextsStorageKey, JSON.stringify(userContexts));
+		setSelectedUserContextIds((prev) =>
+			prev.filter((id) => userContexts.some((context) => context.id === id))
+		);
+	}, [userContexts]);
 
 	useEffect(() => {
 		localStorage.setItem(uiZoomStorageKey, String(uiZoom));
@@ -376,6 +631,15 @@ const App = () => {
 		setMcpServers((prev) => prev.filter((item) => item.id !== id));
 	};
 
+	const confirmAndRemoveMcpServer = (server: McpServerConfig) => {
+		const ok = window.confirm(
+			`Delete MCP server "${server.name}"?\nThis action cannot be undone.`
+		);
+		if (!ok) return;
+		removeMcpServer(server.id);
+		setOpenMcpMenuId(null);
+	};
+
 	const startEditMcpServer = () => {
 		if (showAddMcp && mcpJsonInput.trim().length > 0) return;
 		setShowAddMcp(true);
@@ -441,6 +705,178 @@ const App = () => {
 		setOpenTemplateMenuId(null);
 	};
 
+	const getSkillNameFromContent = (content: string) => {
+		const raw = content.trim();
+		if (!raw) return '';
+		const nameMatch = raw.match(/^\s*name\s*:\s*(.+)$/im);
+		if (nameMatch?.[1]) return nameMatch[1].trim();
+		const headingMatch = raw.match(/^\s*#\s*(.+)$/m);
+		if (headingMatch?.[1]) return headingMatch[1].trim();
+		return '';
+	};
+
+	const saveSkill = () => {
+		const content = skillContent.trim();
+		if (!content) return;
+		const extractedName = getSkillNameFromContent(content);
+		const name = extractedName || `skill_${Date.now().toString(36)}`;
+		if (editingSkillId) {
+			setUserSkills((prev) =>
+				prev.map((skill) =>
+					skill.id === editingSkillId ? { ...skill, name, content } : skill
+				)
+			);
+		} else {
+			const id = `skill_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+			setUserSkills((prev) => [...prev, { id, name, content, source: 'user' }]);
+		}
+		setEditingSkillId(null);
+		setSkillContent(defaultSkillTemplate);
+		setShowSkillForm(false);
+		setOpenSkillMenuId(null);
+	};
+
+	const startEditSkill = (id: string) => {
+		const skill = userSkills.find((item) => item.id === id);
+		if (!skill) return;
+		setEditingSkillId(skill.id);
+		setSkillContent(skill.content);
+		setShowSkillForm(true);
+		setOpenSkillMenuId(null);
+	};
+
+	const clearSkillEditor = () => {
+		setEditingSkillId(null);
+		setSkillContent(defaultSkillTemplate);
+		setShowSkillForm(false);
+	};
+
+	const deleteSkillById = (id: string) => {
+		const skill = userSkills.find((item) => item.id === id);
+		if (!skill || skill.source !== 'user') return;
+		const ok = window.confirm(
+			`Delete skill "${skill.name}"?\nThis action cannot be undone.`
+		);
+		if (!ok) return;
+		setUserSkills((prev) => prev.filter((item) => item.id !== id));
+		if (editingSkillId === id) clearSkillEditor();
+		setOpenSkillMenuId(null);
+	};
+
+	const saveUserContext = () => {
+		const name = userContextName.trim();
+		const content = userContextContent.trim();
+		if (!name || !content) return;
+		if (editingUserContextId) {
+			setUserContexts((prev) =>
+				prev.map((context) =>
+					context.id === editingUserContextId
+						? { ...context, name, content }
+						: context
+				)
+			);
+		} else {
+			const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+			setUserContexts((prev) => [...prev, { id, name, content }]);
+		}
+		setEditingUserContextId(null);
+		setUserContextName('');
+		setUserContextContent('');
+		setShowUserContextForm(false);
+		setOpenUserContextMenuId(null);
+	};
+
+	const startEditUserContext = (id: string) => {
+		const context = userContexts.find((item) => item.id === id);
+		if (!context) return;
+		setEditingUserContextId(context.id);
+		setUserContextName(context.name);
+		setUserContextContent(context.content);
+		setShowUserContextForm(true);
+		setOpenUserContextMenuId(null);
+	};
+
+	const clearUserContextEditor = () => {
+		setEditingUserContextId(null);
+		setUserContextName('');
+		setUserContextContent('');
+		setShowUserContextForm(false);
+	};
+
+	const deleteUserContextById = (id: string) => {
+		const context = userContexts.find((item) => item.id === id);
+		if (!context) return;
+		const ok = window.confirm(
+			`Delete user context "${context.name}"?\nThis action cannot be undone.`
+		);
+		if (!ok) return;
+		setUserContexts((prev) => prev.filter((item) => item.id !== id));
+		if (editingUserContextId === id) clearUserContextEditor();
+		setOpenUserContextMenuId(null);
+	};
+
+	const toggleSelectedUserContext = (id: string) => {
+		setSelectedUserContextIds((prev) =>
+			prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+		);
+	};
+
+	const buildSelectedUserContextBlock = () => {
+		const selected = userContexts.filter((context) =>
+			selectedUserContextIds.includes(context.id)
+		);
+		if (selected.length === 0) return '';
+		return `\n\nUSER CONTEXT (selected only):\n${selected
+			.map((context) => `Context: ${context.name}\n${context.content}`)
+			.join('\n\n')}`;
+	};
+
+	const resolveRequestedSkillRefs = (text: string) => {
+		const tags = Array.from(text.matchAll(/@skill:([^\s,;]+)/gi))
+			.map((match) => match[1]?.trim() || '')
+			.filter(Boolean);
+		const uniqueKeys = Array.from(new Set(tags.map((tag) => normalizeSkillKey(tag))));
+		const requestedSkills = uniqueKeys
+			.map((key) =>
+				skills.find((skill) => normalizeSkillKey(skill.name) === key) || null
+			)
+			.filter((skill): skill is AgentSkill => Boolean(skill));
+		const missing = uniqueKeys.filter(
+			(key) =>
+				!skills.some((skill) => normalizeSkillKey(skill.name) === key)
+		);
+		return { requestedSkills, missing };
+	};
+
+	const loadRequestedSkills = async (text: string) => {
+		const { requestedSkills, missing } = resolveRequestedSkillRefs(text);
+		const loaded = await Promise.all(
+			requestedSkills.map(async (skill) => {
+				if (skill.source === 'predefined' && skill.filePath) {
+					try {
+						const response = await fetch(skill.filePath);
+						if (!response.ok) return null;
+						const content = (await response.text()).trim();
+						if (!content) return null;
+						return { ...skill, content };
+					} catch {
+						return null;
+					}
+				}
+				const content = skill.content?.trim();
+				if (!content) return null;
+				return { ...skill, content };
+			})
+		);
+		const available = loaded.filter((skill): skill is AgentSkill => Boolean(skill));
+		const loadedKeys = new Set(available.map((skill) => normalizeSkillKey(skill.name)));
+		const unavailableByFetch = requestedSkills
+			.filter((skill) => !loadedKeys.has(normalizeSkillKey(skill.name)))
+			.map((skill) => normalizeSkillKey(skill.name));
+		const finalMissing = Array.from(new Set([...missing, ...unavailableByFetch]));
+		return { requestedSkills: available, missing: finalMissing };
+	};
+
 	const readFileAsText = (file: File) =>
 		new Promise<string>((resolve, reject) => {
 			const reader = new FileReader();
@@ -485,6 +921,29 @@ const App = () => {
 
 	const removeAsset = (id: string) => {
 		setAssets((prev) => prev.filter((f) => f.id !== id));
+	};
+
+	const confirmAndRemoveAsset = (asset: AssetFile) => {
+		const ok = window.confirm(
+			`Delete asset "${asset.name}"?\nThis action cannot be undone.`
+		);
+		if (!ok) return;
+		removeAsset(asset.id);
+		setOpenAssetMenuId(null);
+		if (expandedAssetId === asset.id) {
+			setExpandedAssetId(null);
+		}
+	};
+
+	const downloadAsset = (asset: AssetFile) => {
+		const link = document.createElement('a');
+		link.href = asset.dataUrl;
+		link.download = asset.name || 'asset.bin';
+		link.rel = 'noopener';
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		setOpenAssetMenuId(null);
 	};
 
 	const addFiles = async (fileList: FileList | null) => {
@@ -1012,6 +1471,9 @@ const App = () => {
 			FOCUS_TAB: 'SWITCH_TAB',
 			CLOSE_CURRENT_TAB: 'CLOSE_TAB',
 			CLOSE_OTHER_TABS: 'CLOSE_EXTRA_TABS',
+			WAIT_FOR_USER: 'WAIT_FOR_USER_ACTION',
+			WAIT_USER_ACTION: 'WAIT_FOR_USER_ACTION',
+			WAIT_FOR_USER_INPUT: 'WAIT_FOR_USER_ACTION',
 			TOOL_CALL: 'MCP_CALL',
 			CALL_TOOL: 'MCP_CALL',
 		};
@@ -1183,6 +1645,8 @@ const App = () => {
 					return '';
 				case 'CLOSE_EXTRA_TABS':
 					return '';
+				case 'WAIT_FOR_USER_ACTION':
+					return '';
 				case 'MCP_CALL':
 					return typeof params.serverId === 'string' &&
 						params.serverId.trim().length > 0 &&
@@ -1224,12 +1688,45 @@ const App = () => {
 		if (!currentTask.trim()) return;
 		setIsRunning(true);
 		const activeTemplate = templates.find((t) => t.id === activeTemplateId);
-		const taskForAgent = activeTemplate
+		const baseTaskForAgentRaw = activeTemplate
 			? `${activeTemplate.content}\n\nUser Task:\n${currentTask}`
 			: currentTask;
+		const userContextBlock = buildSelectedUserContextBlock();
+		const baseTaskForAgent = `${baseTaskForAgentRaw}${userContextBlock}`;
+		const { requestedSkills, missing } = await loadRequestedSkills(baseTaskForAgent);
+		const requestedSkillsBlock =
+			requestedSkills.length > 0
+				? `\n\nREQUESTED SKILLS (load only these):\n${requestedSkills
+						.map((skill) => `Skill: ${skill.name}\n${skill.content}`)
+						.join('\n\n')}`
+				: '';
+		const taskForAgent = `${baseTaskForAgent}${requestedSkillsBlock}`;
 		addMessage('user', currentTask);
 		if (activeTemplate) {
 			addMessage('system', `Template: ${activeTemplate.name}`);
+		}
+		const selectedContexts = userContexts.filter((context) =>
+			selectedUserContextIds.includes(context.id)
+		);
+		if (selectedContexts.length > 0) {
+			addMessage(
+				'system',
+				`User context loaded: ${selectedContexts
+					.map((context) => context.name)
+					.join(', ')}`
+			);
+		}
+		if (requestedSkills.length > 0) {
+			addMessage(
+				'system',
+				`Skills loaded: ${requestedSkills.map((skill) => skill.name).join(', ')}`
+			);
+		}
+		if (missing.length > 0) {
+			addMessage(
+				'system',
+				`Requested skill(s) not found: ${missing.join(', ')}. Use @skill:SkillName with an existing skill name.`
+			);
 		}
 		setTask('');
 		const runtimeMaxSteps = Math.max(1, Math.floor(maxSteps));
@@ -1276,11 +1773,14 @@ const App = () => {
 		let failureCount = 0;
 		let invalidResponseCount = 0;
 		const tabSession = createTabSessionManager(sessionId);
+		let shouldRestoreMainTab = false;
+		let taskCompleted = false;
 		const mcpTools = await listMcpTools(mcpServers.filter((server) => server.enabled));
 		const mcpCatalog = buildMcpToolCatalogText(mcpTools);
 		activeRef.current = true;
 		(window as any).stopAgent = () => {
 			activeRef.current = false;
+			releasePendingContinue();
 			setIsRunning(false);
 		};
 
@@ -1288,6 +1788,7 @@ const App = () => {
 			const initialTab = await getCurrentTab();
 			if (!initialTab?.id) throw new Error('No active tab');
 			await tabSession.beginRun(initialTab.id);
+			shouldRestoreMainTab = true;
 
 			while (activeRef.current && stepCount < runtimeMaxSteps) {
 				const tabId = await tabSession.ensureCurrentTabActive();
@@ -1394,6 +1895,7 @@ const App = () => {
 					'SWITCH_TAB',
 					'CLOSE_TAB',
 					'CLOSE_EXTRA_TABS',
+					'WAIT_FOR_USER_ACTION',
 					'MCP_CALL',
 					'DONE',
 					'ASK',
@@ -1445,6 +1947,7 @@ const App = () => {
 				);
 
 				if (normalized.action === 'DONE') {
+					taskCompleted = true;
 					activeRef.current = false;
 					addMessage('system', 'Task Completed.');
 					break;
@@ -1454,6 +1957,29 @@ const App = () => {
 					activeRef.current = false;
 					addMessage('system', `Question: ${normalized.params.question}`);
 					break;
+				}
+
+				if (normalized.action === 'WAIT_FOR_USER_ACTION') {
+					const waitReason =
+						typeof normalized.params.reason === 'string' &&
+						normalized.params.reason.trim().length > 0
+							? normalized.params.reason.trim()
+							: 'Complete the needed manual step on the page.';
+					setWaitingForUserAction(true);
+					addMessage(
+						'system',
+						`Agent is waiting for your manual action on the page.\nReason: ${waitReason}\nClick Continue when done.`,
+						'continue_agent'
+					);
+					await new Promise<void>((resolve) => {
+						continueResolverRef.current = resolve;
+					});
+					continueResolverRef.current = null;
+					setWaitingForUserAction(false);
+					if (!activeRef.current) break;
+					addMessage('system', 'User continued the task.');
+					stepCount++;
+					continue;
 				}
 
 				let actionResult = '';
@@ -1484,7 +2010,8 @@ const App = () => {
 							: undefined
 					);
 				} else if (normalized.action === 'CLOSE_EXTRA_TABS') {
-					actionResult = await tabSession.closeExtraTabs();
+					actionResult =
+						'Deferred CLOSE_EXTRA_TABS until task completion. Continue with remaining steps.';
 				} else if (normalized.action === 'MCP_CALL') {
 					const enrichment = enrichMcpArgumentsWithAssets(
 						normalized.params.arguments &&
@@ -1544,6 +2071,14 @@ const App = () => {
 		} catch (e: any) {
 			addMessage('system', `Error: ${e.message}`);
 		} finally {
+			releasePendingContinue();
+			if (shouldRestoreMainTab && taskCompleted) {
+				try {
+					await tabSession.closeExtraTabs();
+				} catch {
+					// Ignore cleanup failures.
+				}
+			}
 			setIsRunning(false);
 		}
 	};
@@ -1552,12 +2087,45 @@ const App = () => {
 		if (!currentTask.trim()) return;
 		setIsRunning(true);
 		const activeTemplate = templates.find((t) => t.id === activeTemplateId);
-		const taskForAgent = activeTemplate
+		const baseTaskForAgentRaw = activeTemplate
 			? `${activeTemplate.content}\n\nUser Question:\n${currentTask}`
 			: currentTask;
+		const userContextBlock = buildSelectedUserContextBlock();
+		const baseTaskForAgent = `${baseTaskForAgentRaw}${userContextBlock}`;
+		const { requestedSkills, missing } = await loadRequestedSkills(baseTaskForAgent);
+		const requestedSkillsBlock =
+			requestedSkills.length > 0
+				? `\n\nREQUESTED SKILLS (load only these):\n${requestedSkills
+						.map((skill) => `Skill: ${skill.name}\n${skill.content}`)
+						.join('\n\n')}`
+				: '';
+		const taskForAgent = `${baseTaskForAgent}${requestedSkillsBlock}`;
 		addMessage('user', currentTask);
 		if (activeTemplate) {
 			addMessage('system', `Template: ${activeTemplate.name}`);
+		}
+		const selectedContexts = userContexts.filter((context) =>
+			selectedUserContextIds.includes(context.id)
+		);
+		if (selectedContexts.length > 0) {
+			addMessage(
+				'system',
+				`User context loaded: ${selectedContexts
+					.map((context) => context.name)
+					.join(', ')}`
+			);
+		}
+		if (requestedSkills.length > 0) {
+			addMessage(
+				'system',
+				`Skills loaded: ${requestedSkills.map((skill) => skill.name).join(', ')}`
+			);
+		}
+		if (missing.length > 0) {
+			addMessage(
+				'system',
+				`Requested skill(s) not found: ${missing.join(', ')}. Use @skill:SkillName with an existing skill name.`
+			);
 		}
 		setTask('');
 		const runtimeRequestTimeoutMs = Math.max(1000, Math.floor(requestTimeoutMs));
@@ -1579,6 +2147,7 @@ const App = () => {
 		activeRef.current = true;
 		(window as any).stopAgent = () => {
 			activeRef.current = false;
+			releasePendingContinue();
 			setIsRunning(false);
 		};
 
@@ -1626,6 +2195,7 @@ const App = () => {
 		} catch (e: any) {
 			addMessage('system', `Error: ${e.message}`);
 		} finally {
+			releasePendingContinue();
 			setIsRunning(false);
 		}
 	};
@@ -1641,8 +2211,23 @@ const App = () => {
 		return tab;
 	};
 
-	const addMessage = (role: 'user' | 'agent' | 'system', content: string) => {
-		setMessages((prev) => [...prev, { role, content }]);
+	const addMessage = (
+		role: 'user' | 'agent' | 'system',
+		content: string,
+		action?: Message['action']
+	) => {
+		setMessages((prev) => [...prev, { role, content, action }]);
+	};
+
+	const releasePendingContinue = () => {
+		const resolve = continueResolverRef.current;
+		continueResolverRef.current = null;
+		if (resolve) resolve();
+		setWaitingForUserAction(false);
+	};
+
+	const continueAfterUserAction = () => {
+		releasePendingContinue();
 	};
 
 	const computeAssetSuggestions = (value: string, caret: number | null) => {
@@ -1695,32 +2280,44 @@ const App = () => {
 		(t) => t.id === activeTemplateId
 	);
 	const inputClass = isDark
-		? 'w-full bg-gpt-surface border border-gpt-border rounded p-2 text-sm text-gpt-text placeholder:text-gpt-muted'
-		: 'w-full bg-white border border-slate-200 rounded p-2 text-sm';
+		? 'w-full bg-gpt-surface border border-gpt-border rounded-xl px-3 py-2.5 text-[13px] text-gpt-text placeholder:text-gpt-muted focus:outline-none focus:ring-2 focus:ring-gpt-accent/20'
+		: 'w-full bg-gpt-surface border border-gpt-border rounded-xl px-3 py-2.5 text-[13px] text-gpt-text placeholder:text-gpt-muted focus:outline-none focus:ring-2 focus:ring-gpt-accent/20';
 	const panelClass = isDark
-		? 'bg-gpt-elevated/35 border border-gpt-border'
-		: 'bg-white border border-slate-200';
-	const labelClass = isDark ? 'text-gpt-muted' : 'text-gray-600';
-	const subtleClass = isDark ? 'text-gpt-muted' : 'text-gray-600';
+		? 'bg-gpt-surface/55 border border-gpt-border shadow-sm'
+		: 'bg-gpt-surface/55 border border-gpt-border shadow-sm';
+	const labelClass = isDark ? 'text-gpt-muted' : 'text-gpt-muted';
+	const subtleClass = isDark ? 'text-gpt-muted' : 'text-gpt-muted';
 	const secondaryButtonClass = isDark
-		? 'bg-gpt-surface hover:bg-gpt-elevated text-gpt-text border border-gpt-border'
-		: 'bg-slate-200 hover:bg-slate-300 text-slate-900';
+		? 'bg-gpt-surface hover:bg-gpt-elevated text-gpt-text border border-gpt-border transition-colors'
+		: 'bg-gpt-surface hover:bg-gpt-elevated text-gpt-text border border-gpt-border transition-colors';
+	const iconButtonClass =
+		'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-gpt-muted hover:text-gpt-text hover:bg-gpt-surface transition-colors';
+	const iconButtonActiveClass =
+		'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gpt-surface text-gpt-text transition-colors';
+	const uploadedAssets = assets.filter((asset) => asset.source !== 'generated');
+	const agentCreatedAssets = assets.filter((asset) => asset.source === 'generated');
+	const skills = [...userSkills, ...predefinedSkills];
 
 	if (showSettings) {
 		return (
 			<div
 				className={`w-full h-screen p-4 font-sans overflow-y-auto ${
-					isDark ? 'bg-gpt-canvas text-gpt-text' : 'bg-slate-100 text-slate-900'
+					isDark ? 'bg-gpt-canvas text-gpt-text' : 'bg-gpt-canvas text-gpt-text'
 				}`}
 				style={{ colorScheme: isDark ? 'dark' : 'light' }}
 			>
 				<h2 className='text-lg font-bold mb-4'>Agent Settings</h2>
 				<div className='space-y-6'>
-						<div className={`${panelClass} rounded-lg p-4`}>
-							<div className='text-xs font-semibold text-gpt-accent mb-3 uppercase tracking-wide'>
-								Unified Agent Model
-							</div>
-						<div className='space-y-4'>
+					<div className={`${panelClass} rounded-lg p-4`}>
+						<button
+							onClick={() => setIsModelSettingsOpen((v) => !v)}
+							className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+						>
+							<span>Model Settings</span>
+							<ChevronIcon open={isModelSettingsOpen} />
+						</button>
+					{isModelSettingsOpen && (
+					<div className='space-y-4'>
 							<div>
 								<label className={`block text-sm mb-1 ${labelClass}`}>
 									Base URL (e.g., http://localhost:11434/v1)
@@ -1794,7 +2391,7 @@ const App = () => {
 										<div className={`text-sm mb-2 ${labelClass}`}>Capabilities</div>
 									<label
 										className={`flex items-center gap-2 text-sm ${
-											isDark ? 'text-gpt-text' : 'text-slate-700'
+											isDark ? 'text-gpt-text' : 'text-gpt-text'
 										}`}
 									>
 										<input
@@ -1927,12 +2524,18 @@ const App = () => {
 										</div>
 							</div>
 						</div>
+					)}
 					</div>
 
 					<div className={`${panelClass} rounded-lg p-4`}>
-						<div className='text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'>
-							MCP Servers
-						</div>
+						<button
+							onClick={() => setIsMcpSettingsOpen((v) => !v)}
+							className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+						>
+							<span>MCP Servers</span>
+							<ChevronIcon open={isMcpSettingsOpen} />
+						</button>
+						{isMcpSettingsOpen && (
 						<div className='space-y-3'>
 							<button
 								onClick={() => {
@@ -1956,7 +2559,7 @@ const App = () => {
 									<div className='flex items-center gap-2'>
 										<button
 											onClick={addMcpServerFromJson}
-											className='bg-gpt-accent hover:bg-gpt-accent-hover text-white rounded px-3 py-1.5 text-xs'
+											className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-3 py-1.5 text-xs'
 										>
 											Save MCP JSON
 										</button>
@@ -1972,7 +2575,7 @@ const App = () => {
 										</button>
 									</div>
 									{mcpInputError ? (
-										<div className='text-xs text-red-400'>{mcpInputError}</div>
+										<div className='text-xs text-gpt-danger'>{mcpInputError}</div>
 									) : null}
 								</div>
 							) : null}
@@ -1986,10 +2589,10 @@ const App = () => {
 									{mcpServers.map((server) => (
 										<div
 											key={server.id}
-											className={`rounded px-2 py-2 text-xs border ${
+											className={`relative rounded px-2 py-2 text-xs border ${
 												isDark
 													? 'bg-gpt-surface border-gpt-border'
-													: 'bg-slate-100 border-slate-200'
+													: 'bg-gpt-canvas border-gpt-border'
 											}`}
 										>
 											<div className='flex items-center justify-between gap-2'>
@@ -2001,8 +2604,8 @@ const App = () => {
 															className={`text-[11px] mt-1 ${
 																mcpTestResultById[server.id]
 																	.startsWith('Connected')
-																	? 'text-emerald-400'
-																	: 'text-red-400'
+																	? 'text-gpt-success'
+																	: 'text-gpt-danger'
 															}`}
 														>
 															{mcpTestResultById[server.id]}
@@ -2010,13 +2613,6 @@ const App = () => {
 													) : null}
 												</div>
 												<div className='flex items-center gap-2'>
-													<button
-														onClick={startEditMcpServer}
-														className={`text-xs px-2 py-1 rounded border ${secondaryButtonClass}`}
-														title='Edit MCP server JSON'
-													>
-														Edit
-													</button>
 													<button
 														onClick={() => testMcpServer(server)}
 														disabled={Boolean(mcpTestingById[server.id])}
@@ -2037,29 +2633,64 @@ const App = () => {
 														Enabled
 													</label>
 													<button
-														onClick={() => removeMcpServer(server.id)}
-														className='text-xs px-2 py-1 rounded border border-red-400/60 text-red-300 hover:bg-red-500/15'
-														title='Remove MCP server'
+														onClick={() =>
+															setOpenMcpMenuId((prev) =>
+																prev === server.id ? null : server.id
+															)
+														}
+														className='inline-flex h-8 w-8 items-center justify-center rounded-lg text-gpt-muted hover:text-gpt-text hover:bg-gpt-elevated transition-colors'
+														title='Actions'
+													>
+														<MoreVerticalIcon />
+													</button>
+												</div>
+											</div>
+											{openMcpMenuId === server.id && (
+												<div
+													className={`absolute right-2 top-10 z-20 min-w-[8.5rem] rounded-lg border p-1 text-xs shadow-lg ${
+														isDark
+															? 'bg-gpt-surface border-gpt-border'
+															: 'bg-gpt-surface border-gpt-border'
+													}`}
+												>
+													<button
+														onClick={() => {
+															setOpenMcpMenuId(null);
+															startEditMcpServer();
+														}}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+													>
+														Edit
+													</button>
+													<button
+														onClick={() => confirmAndRemoveMcpServer(server)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-danger-soft text-gpt-danger'
 													>
 														Delete
 													</button>
 												</div>
-											</div>
+											)}
 										</div>
 									))}
 								</div>
 							)}
 						</div>
+						)}
 					</div>
 
 					<div className={`${panelClass} rounded-lg p-4`}>
-						<div className='text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'>
-							Assets (Upload Only)
-						</div>
+						<button
+							onClick={() => setIsAssetsSettingsOpen((v) => !v)}
+							className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+						>
+							<span>ASSETS</span>
+							<ChevronIcon open={isAssetsSettingsOpen} />
+						</button>
+						{isAssetsSettingsOpen && (
 						<div className='space-y-3'>
 							<label
 								className={`cursor-pointer text-xs ${
-									isDark ? 'text-gpt-accent' : 'text-amber-700'
+									isDark ? 'text-gpt-accent' : 'text-gpt-warning'
 								}`}
 							>
 								＋ Add Assets
@@ -2070,56 +2701,81 @@ const App = () => {
 									onChange={(e) => addAssets(e.target.files)}
 								/>
 							</label>
-							{assets.length === 0 ? (
-								<div className={`text-xs ${subtleClass}`}>No assets yet.</div>
+							{uploadedAssets.length === 0 ? (
+								<div className={`text-xs ${subtleClass}`}>No uploaded assets yet.</div>
 							) : (
 								<div className='space-y-2'>
-									{assets.map((asset) => (
+									{uploadedAssets.map((asset) => (
 										<div
 											key={asset.id}
-											className={`rounded px-2 py-2 text-xs ${
+											className={`relative rounded px-2 py-2 text-xs ${
 												isDark
 													? 'bg-gpt-surface border border-gpt-border'
-													: 'bg-slate-100 border border-slate-200'
+													: 'bg-gpt-canvas border border-gpt-border'
 											}`}
 										>
 											<div className='flex items-center justify-between gap-2'>
 												<div className='truncate'>
 													<div className='truncate'>{asset.name}</div>
 													<div className={`${subtleClass} text-[11px]`}>
-														{asset.type} | {asset.size} bytes |{' '}
-														{asset.source || 'uploaded'}
+														{asset.type} | {asset.size} bytes | uploaded
 													</div>
 												</div>
 												<div className='flex items-center gap-2'>
-													{asset.type.startsWith('text/') ? (
-														<button
-															onClick={() =>
-																setExpandedAssetId((prev) =>
-																	prev === asset.id ? null : asset.id
-																)
-															}
-															className={`text-xs px-2 py-1 rounded border ${secondaryButtonClass}`}
-															title='View text content'
-														>
-															{expandedAssetId === asset.id ? 'Hide' : 'View'}
-														</button>
-													) : null}
 													<button
-														onClick={() => removeAsset(asset.id)}
-														className='text-red-400 hover:text-red-300'
-														title='Remove'
+														onClick={() =>
+															setOpenAssetMenuId((prev) =>
+																prev === asset.id ? null : asset.id
+															)
+														}
+														className='inline-flex h-8 w-8 items-center justify-center rounded-lg text-gpt-muted hover:text-gpt-text hover:bg-gpt-elevated transition-colors'
+														title='Actions'
 													>
-														✕
+														<MoreVerticalIcon />
 													</button>
 												</div>
 											</div>
+											{openAssetMenuId === asset.id && (
+												<div
+													className={`absolute right-2 top-10 z-20 min-w-[8.5rem] rounded-lg border p-1 text-xs shadow-lg ${
+														isDark
+															? 'bg-gpt-surface border-gpt-border'
+															: 'bg-gpt-surface border-gpt-border'
+													}`}
+												>
+													{asset.type.startsWith('text/') && (
+														<button
+															onClick={() => {
+																setExpandedAssetId((prev) =>
+																	prev === asset.id ? null : asset.id
+																);
+																setOpenAssetMenuId(null);
+															}}
+															className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+														>
+															{expandedAssetId === asset.id ? 'Hide' : 'View'}
+														</button>
+													)}
+													<button
+														onClick={() => downloadAsset(asset)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+													>
+														Download
+													</button>
+													<button
+														onClick={() => confirmAndRemoveAsset(asset)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-danger-soft text-gpt-danger'
+													>
+														Delete
+													</button>
+												</div>
+											)}
 											{expandedAssetId === asset.id ? (
 												<pre
 													className={`mt-2 p-2 rounded whitespace-pre-wrap break-words text-[11px] max-h-44 overflow-y-auto ${
 														isDark
-															? 'bg-black/20 border border-gpt-border'
-															: 'bg-white border border-slate-200'
+															? 'bg-gpt-overlay border border-gpt-border'
+															: 'bg-gpt-surface border border-gpt-border'
 													}`}
 												>
 													{decodeDataUrlText(asset.dataUrl)}
@@ -2133,12 +2789,345 @@ const App = () => {
 								Use @ to reference assets by name in tasks.
 							</div>
 						</div>
+						)}
+					</div>
+
+					<div className={`${panelClass} rounded-lg p-4`}>
+						<button
+							onClick={() => setIsAgentCreatedAssetsOpen((v) => !v)}
+							className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+						>
+							<span>Agent Created Assets</span>
+							<ChevronIcon open={isAgentCreatedAssetsOpen} />
+						</button>
+						{isAgentCreatedAssetsOpen && (
+						<div className='space-y-3'>
+							{agentCreatedAssets.length === 0 ? (
+								<div className={`text-xs ${subtleClass}`}>
+									No agent-created assets yet.
+								</div>
+							) : (
+								<div className='space-y-2'>
+									{agentCreatedAssets.map((asset) => (
+										<div
+											key={asset.id}
+											className={`relative rounded px-2 py-2 text-xs ${
+												isDark
+													? 'bg-gpt-surface border border-gpt-border'
+													: 'bg-gpt-canvas border border-gpt-border'
+											}`}
+										>
+											<div className='flex items-center justify-between gap-2'>
+												<div className='truncate'>
+													<div className='truncate'>{asset.name}</div>
+													<div className={`${subtleClass} text-[11px]`}>
+														{asset.type} | {asset.size} bytes | generated
+													</div>
+												</div>
+												<div className='flex items-center gap-2'>
+													<button
+														onClick={() =>
+															setOpenAssetMenuId((prev) =>
+																prev === asset.id ? null : asset.id
+															)
+														}
+														className='inline-flex h-8 w-8 items-center justify-center rounded-lg text-gpt-muted hover:text-gpt-text hover:bg-gpt-elevated transition-colors'
+														title='Actions'
+													>
+														<MoreVerticalIcon />
+													</button>
+												</div>
+											</div>
+											{openAssetMenuId === asset.id && (
+												<div
+													className={`absolute right-2 top-10 z-20 min-w-[8.5rem] rounded-lg border p-1 text-xs shadow-lg ${
+														isDark
+															? 'bg-gpt-surface border-gpt-border'
+															: 'bg-gpt-surface border-gpt-border'
+													}`}
+												>
+													{asset.type.startsWith('text/') && (
+														<button
+															onClick={() => {
+																setExpandedAssetId((prev) =>
+																	prev === asset.id ? null : asset.id
+																);
+																setOpenAssetMenuId(null);
+															}}
+															className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+														>
+															{expandedAssetId === asset.id ? 'Hide' : 'View'}
+														</button>
+													)}
+													<button
+														onClick={() => downloadAsset(asset)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+													>
+														Download
+													</button>
+													<button
+														onClick={() => confirmAndRemoveAsset(asset)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-danger-soft text-gpt-danger'
+													>
+														Delete
+													</button>
+												</div>
+											)}
+											{expandedAssetId === asset.id ? (
+												<pre
+													className={`mt-2 p-2 rounded whitespace-pre-wrap break-words text-[11px] max-h-44 overflow-y-auto ${
+														isDark
+															? 'bg-gpt-overlay border border-gpt-border'
+															: 'bg-gpt-surface border border-gpt-border'
+													}`}
+												>
+													{decodeDataUrlText(asset.dataUrl)}
+												</pre>
+											) : null}
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+						)}
+					</div>
+
+					<div className={`${panelClass} rounded-lg p-4`}>
+						<button
+							onClick={() => setIsUserContextSettingsOpen((v) => !v)}
+							className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+						>
+							<span>User Context</span>
+							<ChevronIcon open={isUserContextSettingsOpen} />
+						</button>
+						{isUserContextSettingsOpen && (
+						<div className='space-y-3'>
+							<div className='flex items-center justify-between gap-2'>
+								<div className={`text-xs ${subtleClass}`}>
+									Create reusable identity/context blocks.
+								</div>
+								<button
+									onClick={() => {
+										clearUserContextEditor();
+										setShowUserContextForm(true);
+									}}
+									className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
+								>
+									Add Context
+								</button>
+							</div>
+							{userContexts.length === 0 ? (
+								<div className={`text-xs ${subtleClass}`}>No user context yet.</div>
+							) : (
+								<div className='space-y-2'>
+									{userContexts.map((context) => (
+										<div
+											key={context.id}
+											className={`relative rounded px-2 py-2 text-xs border ${
+												isDark
+													? 'bg-gpt-surface border-gpt-border'
+													: 'bg-gpt-canvas border-gpt-border'
+											}`}
+										>
+											<div className='flex items-start justify-between gap-2'>
+												<div className='min-w-0'>
+													<div className='font-semibold truncate'>{context.name}</div>
+													<div className={`${subtleClass} line-clamp-2`}>
+														{context.content}
+													</div>
+												</div>
+												<button
+													onClick={() =>
+														setOpenUserContextMenuId((prev) =>
+															prev === context.id ? null : context.id
+														)
+													}
+													className='inline-flex h-8 w-8 items-center justify-center rounded-lg text-gpt-muted hover:text-gpt-text hover:bg-gpt-elevated transition-colors'
+													title='Actions'
+												>
+													<MoreVerticalIcon />
+												</button>
+											</div>
+											{openUserContextMenuId === context.id && (
+												<div
+													className={`absolute right-2 top-10 z-20 min-w-[8.5rem] rounded-lg border p-1 text-xs shadow-lg ${
+														isDark
+															? 'bg-gpt-surface border-gpt-border'
+															: 'bg-gpt-surface border-gpt-border'
+													}`}
+												>
+													<button
+														onClick={() => startEditUserContext(context.id)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+													>
+														Edit
+													</button>
+													<button
+														onClick={() => deleteUserContextById(context.id)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-danger-soft text-gpt-danger'
+													>
+														Delete
+													</button>
+												</div>
+											)}
+										</div>
+									))}
+								</div>
+							)}
+							{showUserContextForm && (
+								<div className='space-y-2'>
+									<input
+										className={inputClass}
+										value={userContextName}
+										onChange={(e) => setUserContextName(e.target.value)}
+										placeholder='Context name or identity'
+									/>
+									<textarea
+										className={inputClass}
+										rows={8}
+										value={userContextContent}
+										onChange={(e) => setUserContextContent(e.target.value)}
+										placeholder='Context content'
+									/>
+									<div className='flex items-center gap-2'>
+										<button
+											onClick={saveUserContext}
+											className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-3 py-1.5 text-xs'
+										>
+											{editingUserContextId ? 'Update Context' : 'Save Context'}
+										</button>
+										<button
+											onClick={clearUserContextEditor}
+											className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
+										>
+											Cancel
+										</button>
+									</div>
+								</div>
+							)}
+						</div>
+						)}
+					</div>
+
+					<div className={`${panelClass} rounded-lg p-4`}>
+						<button
+							onClick={() => setIsSkillsSettingsOpen((v) => !v)}
+							className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+						>
+							<span>Skills</span>
+							<ChevronIcon open={isSkillsSettingsOpen} />
+						</button>
+						{isSkillsSettingsOpen && (
+						<div className='space-y-3'>
+							<div className='flex items-center justify-between gap-2'>
+								<div className={`text-xs ${subtleClass}`}>
+									Use in task: <span className='text-gpt-text'>@skill:SkillName</span>
+								</div>
+								<button
+									onClick={() => {
+										clearSkillEditor();
+										setShowSkillForm(true);
+									}}
+									className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
+								>
+									New Skill
+								</button>
+							</div>
+							{skills.length === 0 ? (
+								<div className={`text-xs ${subtleClass}`}>No skills yet.</div>
+							) : (
+								<div className='space-y-2'>
+									{skills.map((skill) => (
+										<div
+											key={skill.id}
+											className={`relative rounded px-2 py-2 text-xs border ${
+												isDark
+													? 'bg-gpt-surface border-gpt-border'
+													: 'bg-gpt-canvas border-gpt-border'
+											}`}
+										>
+											<div className='flex items-start justify-between gap-2'>
+												<div className='min-w-0'>
+													<div className='font-semibold truncate'>{skill.name}</div>
+													<div className={`${subtleClass} line-clamp-2`}>
+														{skill.source === 'predefined'
+															? `Predefined file skill (${skill.filePath || 'SKILL.md'})`
+															: skill.content}
+													</div>
+												</div>
+												{skill.source === 'user' && (
+													<button
+														onClick={() =>
+															setOpenSkillMenuId((prev) =>
+																prev === skill.id ? null : skill.id
+															)
+														}
+														className='inline-flex h-8 w-8 items-center justify-center rounded-lg text-gpt-muted hover:text-gpt-text hover:bg-gpt-elevated transition-colors'
+														title='Actions'
+													>
+														<MoreVerticalIcon />
+													</button>
+												)}
+											</div>
+											{skill.source === 'user' && openSkillMenuId === skill.id && (
+												<div
+													className={`absolute right-2 top-10 z-20 min-w-[8.5rem] rounded-lg border p-1 text-xs shadow-lg ${
+														isDark
+															? 'bg-gpt-surface border-gpt-border'
+															: 'bg-gpt-surface border-gpt-border'
+													}`}
+												>
+													<button
+														onClick={() => startEditSkill(skill.id)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
+													>
+														Edit
+													</button>
+													<button
+														onClick={() => deleteSkillById(skill.id)}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-danger-soft text-gpt-danger'
+													>
+														Delete
+													</button>
+												</div>
+											)}
+										</div>
+									))}
+								</div>
+							)}
+							{showSkillForm && (
+								<div className='space-y-2'>
+									<textarea
+										className={inputClass}
+										rows={12}
+										value={skillContent}
+										onChange={(e) => setSkillContent(e.target.value)}
+										placeholder='Write skill template...'
+									/>
+									<div className='flex items-center gap-2'>
+										<button
+											onClick={saveSkill}
+											className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-3 py-1.5 text-xs'
+										>
+											{editingSkillId ? 'Update Skill' : 'Save Skill'}
+										</button>
+										<button
+											onClick={clearSkillEditor}
+											className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
+										>
+											Cancel
+										</button>
+									</div>
+								</div>
+							)}
+						</div>
+						)}
 					</div>
 
 					<div className='flex gap-2 pt-2'>
 						<button
 							onClick={saveSettings}
-							className='bg-gpt-accent hover:bg-gpt-accent-hover text-white rounded px-4 py-2 text-sm flex-1'
+							className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-4 py-2 text-sm flex-1'
 						>
 							Save & Close
 						</button>
@@ -2156,126 +3145,99 @@ const App = () => {
 
 	return (
 		<div
-			className={`w-full h-screen flex flex-col font-sans ${
-				isDark ? 'bg-gpt-canvas text-gpt-text' : 'bg-slate-100 text-slate-900'
+			className={`w-full h-screen flex flex-col navai-shell ${
+				isDark ? 'bg-gpt-canvas text-gpt-text' : 'bg-gpt-canvas text-gpt-text'
 			}`}
-			style={{ colorScheme: isDark ? 'dark' : 'light', zoom: uiZoom }}
+			style={{ colorScheme: isDark ? 'dark' : 'light' }}
 		>
 			<div
-				className={`p-4 border-b ${
+				className={`navai-topbar px-4 py-3 border-b ${
 					isDark
 						? 'border-gpt-border bg-gpt-sidebar'
-						: 'border-slate-200 bg-white'
+						: 'border-gpt-border bg-gpt-surface'
 				} flex justify-between items-center`}
 			>
-				<div className='flex items-center gap-2'>
+				<div className='flex items-center gap-3'>
 					<div
 						className={`w-3 h-3 rounded-full ${
 							isRunning
 								? 'bg-gpt-accent animate-pulse'
 								: isDark
 								? 'bg-gpt-muted'
-								: 'bg-gray-400'
+								: 'bg-gpt-muted'
 						}`}
 					></div>
-					<h1
-						className={`text-lg font-semibold ${
-							isDark
-								? 'text-gpt-text'
-								: 'bg-gradient-to-r from-blue-500 to-purple-600 bg-clip-text text-transparent'
-						}`}
-					>
+					<h1 className='navai-title text-gpt-text'>
 						NavAI
 					</h1>
 				</div>
 				<div className='flex gap-2'>
 					<button
 						onClick={zoomOut}
-						className={`text-xs border rounded px-2 py-1 ${
-							isDark
-								? 'text-gpt-muted border-gpt-border hover:text-gpt-text'
-								: 'text-gray-600 border-slate-200 hover:text-gray-900'
-						}`}
+						className={iconButtonClass}
 						title='Zoom out'
+						aria-label='Zoom out'
 					>
-						🔍−
+						<ZoomOutIcon />
 					</button>
 					<button
 						onClick={zoomIn}
-						className={`text-xs border rounded px-2 py-1 ${
-							isDark
-								? 'text-gpt-muted border-gpt-border hover:text-gpt-text'
-								: 'text-gray-600 border-slate-200 hover:text-gray-900'
-						}`}
+						className={iconButtonClass}
 						title='Zoom in'
+						aria-label='Zoom in'
 					>
-						🔍+
+						<ZoomInIcon />
 					</button>
 					{isRunning && (
 						<button
 							onClick={() =>
 								(window as any).stopAgent && (window as any).stopAgent()
 							}
-							className='text-red-500 hover:text-red-600 text-xs border border-red-500/50 rounded px-2 py-1 transition-colors'
+							className='inline-flex h-10 shrink-0 px-3 items-center justify-center rounded-xl bg-gpt-danger-soft text-gpt-danger hover:bg-gpt-danger-soft/80 transition-colors text-xs font-medium'
 						>
 							STOP
 						</button>
 					)}
 					<button
 						onClick={() => setShowTemplatePanel((v) => !v)}
-						className={`text-xs border rounded px-2 py-1 ${
-							showTemplatePanel
-								? 'text-gpt-accent border-gpt-accent/60'
-								: isDark
-								? 'text-gpt-muted border-gpt-border hover:text-gpt-text'
-								: 'text-gray-600 border-slate-200 hover:text-gray-900'
-						}`}
+						className={showTemplatePanel ? iconButtonActiveClass : iconButtonClass}
 						title='Templates'
+						aria-label='Templates'
 					>
-						⌘
+						<TemplatesIcon />
 					</button>
 					<button
 						onClick={() => setShowHistoryPanel((v) => !v)}
-						className={`text-xs border rounded px-2 py-1 ${
-							showHistoryPanel
-								? 'text-gpt-text border-gpt-border'
-								: isDark
-								? 'text-gpt-muted border-gpt-border hover:text-gpt-text'
-								: 'text-gray-600 border-slate-200 hover:text-gray-900'
-						}`}
+						className={showHistoryPanel ? iconButtonActiveClass : iconButtonClass}
 						title='History'
+						aria-label='History'
 					>
-						⏱
+						<HistoryIcon />
 					</button>
 					<button
 						onClick={startNewChat}
-						className={`text-xs border rounded px-2 py-1 ${
-							isDark
-								? 'text-gpt-accent border-gpt-accent/50 hover:text-gpt-accent-hover'
-								: 'text-blue-600 border-blue-500/50 hover:text-blue-700'
-						}`}
+						className={iconButtonClass}
 						title='New chat'
+						aria-label='New chat'
 					>
-						＋
+						<NewChatIcon />
 					</button>
 					<button
 						onClick={() => setShowSettings(true)}
-						className={
-							isDark
-								? 'text-gpt-muted hover:text-gpt-text'
-								: 'text-gray-400 hover:text-gray-900'
-						}
+						className={iconButtonClass}
 						title='Settings'
+						aria-label='Settings'
 					>
-						⚙
+						<SettingsIcon />
 					</button>
 				</div>
 			</div>
 
-			<div className='flex-1 flex min-h-0'>
+			<div className='flex-1 flex min-h-0' style={{ zoom: uiZoom }}>
 				<div className='flex-1 flex flex-col min-w-0'>
-					<div className='flex-1 overflow-y-auto p-4 space-y-4'>
-						{messages.map((m, i) => (
+					<div className='flex-1 overflow-y-auto'>
+						<div className='navai-feed space-y-4'>
+							{messages.map((m, i) => (
 							<div
 								key={i}
 								className={`flex ${
@@ -2283,18 +3245,18 @@ const App = () => {
 								}`}
 							>
 								<div
-									className={`max-w-[90%] rounded-lg p-3 text-sm whitespace-pre-wrap ${
+									className={`max-w-[86%] rounded-2xl px-4 py-3 text-[13px] leading-6 whitespace-pre-wrap ${
 										m.role === 'user'
 											? isDark
 												? 'bg-gpt-user text-gpt-text border border-gpt-border/60'
-												: 'bg-blue-500 text-white'
+												: 'bg-gpt-accent text-gpt-on-accent'
 											: m.role === 'agent'
 											? isDark
 												? 'bg-gpt-surface border border-gpt-border text-gpt-text'
-												: 'bg-white border border-slate-200'
+												: 'bg-gpt-surface border border-gpt-border'
 											: isDark
 											? 'text-gpt-muted text-xs bg-gpt-sidebar/50 border border-gpt-border/40'
-											: 'text-gray-600 text-xs bg-slate-200/60'
+											: 'text-gpt-muted text-xs bg-gpt-surface/60'
 									}`}
 								>
 									{m.role === 'agent'
@@ -2306,7 +3268,7 @@ const App = () => {
 														{!hasContent ? (
 															<div
 																className={`text-xs ${
-																	isDark ? 'text-gpt-muted' : 'text-gray-500'
+																	isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 																}`}
 															>
 																Thinking…
@@ -2323,14 +3285,14 @@ const App = () => {
 																		className={`rounded border px-2 py-1 ${
 																			isDark
 																				? 'border-gpt-border bg-gpt-sidebar/30'
-																				: 'border-slate-200 bg-slate-50'
+																				: 'border-gpt-border bg-gpt-surface/35'
 																		}`}
 																	>
 																		<summary
 																			className={`cursor-pointer text-xs select-none ${
 																				isDark
 																					? 'text-gpt-muted'
-																					: 'text-gray-500'
+																					: 'text-gpt-muted'
 																			}`}
 																		>
 																			Thinking
@@ -2346,14 +3308,14 @@ const App = () => {
 																		className={`rounded border px-2 py-2 ${
 																			isDark
 																				? 'border-gpt-border bg-gpt-sidebar/20'
-																				: 'border-slate-200 bg-slate-50'
+																				: 'border-gpt-border bg-gpt-surface/35'
 																		}`}
 																	>
 																		<div
 																			className={`text-xs mb-1 ${
 																				isDark
 																					? 'text-gpt-muted'
-																					: 'text-gray-500'
+																					: 'text-gpt-muted'
 																			}`}
 																		>
 																			Action
@@ -2379,7 +3341,7 @@ const App = () => {
 																							className={
 																								isDark
 																									? 'text-gpt-muted'
-																									: 'text-gray-500'
+																									: 'text-gpt-muted'
 																							}
 																						>
 																							{detail.label}:
@@ -2403,7 +3365,7 @@ const App = () => {
 																className={`text-xs ${
 																	isDark
 																		? 'text-gpt-accent hover:text-gpt-accent-hover'
-																		: 'text-blue-600 hover:text-blue-700'
+																		: 'text-gpt-accent hover:text-gpt-accent-hover'
 																}`}
 																title='Copy raw response'
 															>
@@ -2414,22 +3376,33 @@ const App = () => {
 												);
 										  })()
 										: m.content}
+									{m.action === 'continue_agent' && (
+										<button
+											onClick={continueAfterUserAction}
+											disabled={!waitingForUserAction}
+											className='mt-3 rounded-lg bg-gpt-accent px-3 py-1.5 text-xs font-medium text-gpt-on-accent transition-colors hover:bg-gpt-accent-hover disabled:opacity-60 disabled:cursor-not-allowed'
+										>
+											Continue
+										</button>
+									)}
 								</div>
 							</div>
-						))}
-						<div ref={bottomRef} />
+							))}
+							<div ref={bottomRef} />
+						</div>
 					</div>
 
 					<div
-						className={`p-4 border-t ${
+						className={`px-4 py-3 border-t ${
 							isDark
 								? 'border-gpt-border bg-gpt-canvas'
-								: 'border-slate-200 bg-white'
+								: 'border-gpt-border bg-gpt-surface'
 						}`}
 					>
+						<div className='navai-composer-shell'>
 						<div
 							className={`flex items-center justify-between text-xs mb-2 ${
-								isDark ? 'text-gpt-muted' : 'text-gray-600'
+								isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 							}`}
 						>
 							<div>
@@ -2440,7 +3413,7 @@ const App = () => {
 								className={`cursor-pointer ${
 									isDark
 										? 'text-gpt-accent hover:text-gpt-accent-hover'
-										: 'text-blue-600 hover:text-blue-700'
+										: 'text-gpt-accent hover:text-gpt-accent-hover'
 								}`}
 							>
 								📎
@@ -2460,17 +3433,17 @@ const App = () => {
 										className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${
 											isDark
 												? 'bg-gpt-surface border border-gpt-border'
-												: 'bg-slate-100 border border-slate-200'
+												: 'bg-gpt-canvas border border-gpt-border'
 										}`}
 									>
 										<span
-											className={isDark ? 'text-gpt-text' : 'text-gray-700'}
+											className={isDark ? 'text-gpt-text' : 'text-gpt-text'}
 										>
 											{file.name}
 										</span>
 										<button
 											onClick={() => removeFile(file.id)}
-											className='text-red-400 hover:text-red-300'
+											className='text-gpt-danger hover:text-gpt-danger'
 											title='Remove'
 										>
 											✕
@@ -2485,10 +3458,10 @@ const App = () => {
 								disabled={isRunning}
 								className={`text-xs px-3 py-1 rounded-full border ${
 									interactionMode === 'agent'
-										? 'bg-gpt-accent text-white border-gpt-accent'
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
 										: isDark
 										? 'border-gpt-border text-gpt-muted hover:text-gpt-text'
-										: 'border-slate-300 text-slate-600 hover:text-slate-900'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
 								}`}
 							>
 								Agent
@@ -2498,23 +3471,64 @@ const App = () => {
 								disabled={isRunning}
 								className={`text-xs px-3 py-1 rounded-full border ${
 									interactionMode === 'ask'
-										? 'bg-gpt-accent text-white border-gpt-accent'
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
 										: isDark
 										? 'border-gpt-border text-gpt-muted hover:text-gpt-text'
-										: 'border-slate-300 text-slate-600 hover:text-slate-900'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
 								}`}
 							>
 								Ask
 							</button>
+							<button
+								onClick={() => setShowUserContextPicker((prev) => !prev)}
+								disabled={userContexts.length === 0}
+								className={`text-xs px-3 py-1 rounded-full border ${
+									showUserContextPicker
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
+								} ${userContexts.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+							>
+								Context ({selectedUserContextIds.length})
+							</button>
 						</div>
-						<div className='flex gap-2'>
-							<input
-								ref={inputRef}
-								className={`flex-1 rounded-xl px-3 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 transition-all ${
+						{showUserContextPicker && (
+							<div
+								className={`mb-3 rounded-lg border p-2 text-xs ${
 									isDark
-										? 'bg-gpt-surface border border-gpt-border text-gpt-text placeholder:text-gpt-muted focus:ring-gpt-accent/35'
-										: 'bg-white border border-slate-200 focus:ring-blue-500'
+										? 'border-gpt-border bg-gpt-surface'
+										: 'border-gpt-border bg-gpt-surface'
 								}`}
+							>
+								{userContexts.length === 0 ? (
+									<div className={subtleClass}>No user context available.</div>
+								) : (
+									<div className='space-y-1'>
+										{userContexts.map((context) => (
+											<label
+												key={context.id}
+												className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'
+											>
+												<input
+													type='checkbox'
+													checked={selectedUserContextIds.includes(context.id)}
+													onChange={() => toggleSelectedUserContext(context.id)}
+												/>
+												<span className='truncate'>{context.name}</span>
+											</label>
+										))}
+									</div>
+								)}
+							</div>
+						)}
+						<div className='flex gap-2 items-end rounded-3xl border border-gpt-border bg-gpt-surface px-2 py-2 shadow-sm transition-colors focus-within:border-gpt-accent/60 focus-within:ring-1 focus-within:ring-gpt-accent/25'>
+							<textarea
+								ref={inputRef}
+								className={`flex-1 resize-none bg-transparent px-3 py-2 text-[14px] leading-6 focus:outline-none transition-all ${
+									isDark
+										? 'text-gpt-text placeholder:text-gpt-muted'
+										: 'text-gpt-text placeholder:text-gpt-muted'
+								}`}
+								rows={2}
 								placeholder={
 									isRunning
 										? interactionMode === 'ask'
@@ -2537,14 +3551,17 @@ const App = () => {
 									setAssetQuery(query);
 								}}
 								disabled={isRunning}
-								onKeyDown={(e) =>
-									e.key === 'Enter' && !isRunning && runCurrentMode()
-								}
+								onKeyDown={(e) => {
+									if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !isRunning) {
+										e.preventDefault();
+										runCurrentMode();
+									}
+								}}
 							/>
 							<button
 								disabled={isRunning}
 								onClick={runCurrentMode}
-								className='bg-gpt-accent hover:bg-gpt-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl px-4 py-2.5 text-sm font-medium transition-all shadow-md shadow-black/20'
+								className='bg-gpt-accent hover:bg-gpt-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-gpt-on-accent rounded-full px-4 py-2 text-sm font-medium transition-all'
 							>
 								{isRunning ? '…' : interactionMode === 'ask' ? 'Ask' : 'Go'}
 							</button>
@@ -2554,7 +3571,7 @@ const App = () => {
 								className={`mt-2 rounded-lg border text-xs ${
 									isDark
 										? 'border-gpt-border bg-gpt-sidebar'
-										: 'border-slate-200 bg-white'
+										: 'border-gpt-border bg-gpt-surface'
 								}`}
 							>
 								{assets
@@ -2566,7 +3583,7 @@ const App = () => {
 										<button
 											key={asset.id}
 											className={`w-full text-left px-3 py-2 ${
-												isDark ? 'hover:bg-gpt-surface' : 'hover:bg-slate-100'
+												isDark ? 'hover:bg-gpt-surface' : 'hover:bg-gpt-surface'
 											}`}
 											onClick={() => applyAssetMention(asset.name)}
 										>
@@ -2577,21 +3594,22 @@ const App = () => {
 						)}
 						<div
 							className={`text-xs text-center mt-2 ${
-								isDark ? 'text-gpt-muted' : 'text-gray-500'
+								isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 							}`}
 						>
 							Model: {modelName} | Mode: {interactionMode === 'ask' ? 'Ask' : 'Agent'}
+						</div>
 						</div>
 					</div>
 				</div>
 
 				{(showTemplatePanel || showHistoryPanel) && (
 					<div
-						className={`w-80 border-l ${
+						className={`w-72 border-l ${
 							isDark
 								? 'border-gpt-border bg-gpt-sidebar'
-								: 'border-slate-200 bg-white'
-						} p-4 space-y-4 overflow-y-auto`}
+								: 'border-gpt-border bg-gpt-surface'
+						} p-3 space-y-3 overflow-y-auto`}
 					>
 						{showTemplatePanel && (
 							<div className={`${panelClass} rounded-lg p-4`}>
@@ -2607,7 +3625,7 @@ const App = () => {
 										className={`text-xs px-2 py-1 rounded border ${
 											isDark
 												? 'text-gpt-accent border-gpt-accent/60'
-												: 'text-emerald-600 border-emerald-500/60'
+												: 'text-gpt-success border-gpt-success/60'
 										}`}
 										title='New template'
 									>
@@ -2631,7 +3649,7 @@ const App = () => {
 														className={`relative rounded border px-2 py-2 text-xs ${
 															isDark
 																? 'border-gpt-border bg-gpt-surface/60'
-																: 'border-slate-200 bg-slate-50'
+																: 'border-gpt-border bg-gpt-surface/35'
 														}`}
 													>
 														<button
@@ -2645,7 +3663,7 @@ const App = () => {
 															<div className='truncate'>{t.name}</div>
 															<div
 																className={`truncate ${
-																	isDark ? 'text-gpt-muted' : 'text-gray-500'
+																	isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 																}`}
 															>
 																{t.content.slice(0, 80)}
@@ -2661,7 +3679,7 @@ const App = () => {
 															className={`absolute top-2 right-2 text-xs px-2 py-1 rounded border ${
 																isDark
 																	? 'border-gpt-border text-gpt-muted hover:text-gpt-text'
-																	: 'border-slate-200 text-gray-600 hover:text-gray-900'
+																	: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
 															}`}
 															title='More'
 														>
@@ -2672,7 +3690,7 @@ const App = () => {
 																className={`absolute right-2 top-9 z-10 rounded border p-1 text-xs ${
 																	isDark
 																		? 'bg-gpt-surface border-gpt-border'
-																		: 'bg-white border-slate-200'
+																		: 'bg-gpt-surface border-gpt-border'
 																}`}
 															>
 																<button
@@ -2683,7 +3701,7 @@ const App = () => {
 																	className={`block w-full text-left px-2 py-1 rounded ${
 																		isDark
 																			? 'hover:bg-gpt-elevated'
-																			: 'hover:bg-slate-100'
+																			: 'hover:bg-gpt-surface'
 																	}`}
 																>
 																	Edit
@@ -2692,8 +3710,8 @@ const App = () => {
 																	onClick={() => deleteTemplateById(t.id)}
 																	className={`block w-full text-left px-2 py-1 rounded ${
 																		isDark
-																			? 'text-red-400 hover:bg-gpt-elevated'
-																			: 'text-red-600 hover:bg-slate-100'
+																			? 'text-gpt-danger hover:bg-gpt-elevated'
+																			: 'text-gpt-danger hover:bg-gpt-surface'
 																	}`}
 																>
 																	Delete
@@ -2744,7 +3762,7 @@ const App = () => {
 													className={`w-full rounded p-2 text-sm h-28 ${
 														isDark
 															? 'bg-gpt-surface border border-gpt-border text-gpt-text placeholder:text-gpt-muted'
-															: 'bg-white border border-slate-200'
+															: 'bg-gpt-surface border border-gpt-border'
 													}`}
 													value={templateContent}
 													onChange={(e) => setTemplateContent(e.target.value)}
@@ -2754,7 +3772,7 @@ const App = () => {
 											<div className='flex gap-2'>
 												<button
 													onClick={saveTemplate}
-													className='bg-gpt-accent hover:bg-gpt-accent-hover text-white rounded px-4 py-2 text-sm flex-1'
+													className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-4 py-2 text-sm flex-1'
 												>
 													{editingTemplateId
 														? 'Update Template'
@@ -2777,7 +3795,7 @@ const App = () => {
 							<div className={`${panelClass} rounded-lg p-4`}>
 								<div
 									className={`text-xs font-semibold mb-3 uppercase tracking-wide ${
-										isDark ? 'text-gpt-text' : 'text-gray-500'
+										isDark ? 'text-gpt-text' : 'text-gpt-muted'
 									}`}
 								>
 									Session History
@@ -2785,7 +3803,7 @@ const App = () => {
 								<div className='flex items-center justify-between'>
 									<div
 										className={`text-xs ${
-											isDark ? 'text-gpt-muted' : 'text-gray-600'
+											isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 										}`}
 									>
 										Messages: {messages.length}
@@ -2807,6 +3825,8 @@ const App = () => {
 };
 
 export default App;
+
+
 
 
 

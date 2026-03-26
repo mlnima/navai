@@ -1,7 +1,12 @@
 {
     "manifest_version": 3,
-    "name": "General Agent Extension",
+    "name": "Nav AI",
     "version": "1.0",
+    "icons": {
+		"192": "images/icon-192.png",
+		"384": "images/icon-384.png",
+		"512": "images/icon-512.png"
+	},
     "description": "AI Agent Interface",
     "permissions": [
         "sidePanel",

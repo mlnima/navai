@@ -105,8 +105,10 @@ Return ONLY one valid JSON object with keys "action" and "params".
 Do NOT include markdown fences or extra text.
 
 Do not repeat the same failed action. If blocked, use ASK.
+If progress requires the user to do something manually (captcha, login approval, OS dialog), use WAIT_FOR_USER_ACTION.
 Prefer ids from ELEMENT MAP first, then exact labels, then coordinates.
 Prefer staying in the current tab; use OPEN_TAB only when a new tab is clearly needed.
+Do not use CLOSE_EXTRA_TABS during normal execution; finish the task first and use DONE.
 If you output invalid JSON, recover by outputting valid JSON only.
 
 Supported Actions:
@@ -154,7 +156,8 @@ Example for CV + generated cover letter:
   }
 }
 23. DONE -> { "summary": "message" }
-24. ASK -> { "question": "text" }`;
+24. ASK -> { "question": "text" }
+25. WAIT_FOR_USER_ACTION -> { "reason"?: "short explanation for the user" }`;
 
         const textContext = `TASK:\n${task}
 

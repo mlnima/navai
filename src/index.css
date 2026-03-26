@@ -2,19 +2,64 @@
 
 @theme {
   --color-gpt-sidebar: #202123;
-  --color-gpt-canvas: #343541;
-  --color-gpt-surface: #40414f;
-  --color-gpt-elevated: #444654;
-  --color-gpt-user: #2f2f2f;
+  --color-gpt-canvas: #2f3033;
+  --color-gpt-surface: #3a3b40;
+  --color-gpt-elevated: #45464d;
+  --color-gpt-user: #2b2c30;
   --color-gpt-border: #565869;
   --color-gpt-text: #ececf1;
-  --color-gpt-muted: #8e8ea0;
+  --color-gpt-muted: #a1a1b3;
   --color-gpt-accent: #10a37f;
   --color-gpt-accent-hover: #0d8f6e;
+  --color-gpt-on-accent: #f2fffb;
+  --color-gpt-danger: #f87171;
+  --color-gpt-danger-soft: #4b2323;
+  --color-gpt-success: #34d399;
+  --color-gpt-warning: #f59e0b;
+  --color-gpt-overlay: #2a2b30;
+  --font-gpt-ui: "Soehne", "Segoe UI", "Helvetica Neue", "Arial", sans-serif;
 }
 
 body {
   margin: 0;
   width: 100%;
   min-height: 100vh;
+  background: var(--color-gpt-canvas);
+  color: var(--color-gpt-text);
+  font-family: var(--font-gpt-ui);
+  letter-spacing: 0.01em;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+.navai-shell {
+  background-image:
+    radial-gradient(1200px 600px at 55% -80px, color-mix(in oklab, var(--color-gpt-elevated) 42%, transparent), transparent 70%),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-gpt-canvas) 92%, black), var(--color-gpt-canvas));
+}
+
+.navai-topbar {
+  backdrop-filter: blur(8px);
+}
+
+.navai-title {
+  font-size: 1.06rem;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+}
+
+.navai-feed {
+  width: 100%;
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1.1rem 1.25rem 1.8rem;
+}
+
+.navai-composer-shell {
+  width: 100%;
+  max-width: 52rem;
+  margin: 0 auto;
 }

@@ -70,7 +70,11 @@ export const createTabSessionManager = (sessionId: string) => {
         const activeTab = await getActiveTabInLastFocusedWindow();
         const activeTabId = Number.isInteger(activeTab?.id) ? Number(activeTab?.id) : null;
         const openerTabId = Number.isInteger(activeTab?.openerTabId) ? Number(activeTab?.openerTabId) : null;
-        if (activeTabId && isManaged(activeTabId)) {
+        if (
+            activeTabId &&
+            isManaged(activeTabId) &&
+            (!state.currentTabId || !isManaged(state.currentTabId))
+        ) {
             state.currentTabId = activeTabId;
         } else if (
             activeTabId &&
