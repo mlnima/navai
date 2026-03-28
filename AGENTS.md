@@ -1,6 +1,8 @@
 # GOAL
 
-this is a chrome extension which use AI models via API to do tasks on the sites or read the site and answer the questions. it should be able to do anything human can do.
+- this is a chrome extension which use AI models to do tasks on the sites or read the site and answer the questions.
+- it should be able to do anything human can do.
+- it should be very optimized so can work with very small models as well.
 
 ## DEVELOPMENT
 
