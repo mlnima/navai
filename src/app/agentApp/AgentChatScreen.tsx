@@ -1,7 +1,6 @@
 import { parseAgentMessage } from '../../utils/parseAgentMessage';
 import ZoomOutIcon from '../icons/ZoomOutIcon';
 import ZoomInIcon from '../icons/ZoomInIcon';
-import TemplatesIcon from '../icons/TemplatesIcon';
 import HistoryIcon from '../icons/HistoryIcon';
 import NewChatIcon from '../icons/NewChatIcon';
 import SettingsIcon from '../icons/SettingsIcon';
@@ -16,27 +15,21 @@ const AgentChatScreen = (p: AgentAppModel) => {
 		setShowSettings,
 		interactionMode,
 		setInteractionMode,
-		modelName,
+		modelConfigs,
+		activeModelId,
+		setActiveModelId,
+		activeModelConfig,
 		templates,
 		activeTemplateId,
 		setActiveTemplateId,
-		editingTemplateId,
-		templateName,
-		setTemplateName,
-		templateContent,
-		setTemplateContent,
 		attachedFiles,
 		assets,
-		showTemplatePanel,
-		setShowTemplatePanel,
+		showTemplatePicker,
+		setShowTemplatePicker,
 		showHistoryPanel,
 		setShowHistoryPanel,
 		uiZoom,
 		isDark,
-		showTemplateForm,
-		setShowTemplateForm,
-		openTemplateMenuId,
-		setOpenTemplateMenuId,
 		showAssetSuggestions,
 		setShowAssetSuggestions,
 		assetQuery,
@@ -47,10 +40,6 @@ const AgentChatScreen = (p: AgentAppModel) => {
 		setShowUserContextPicker,
 		waitingForUserAction,
 		clearSession,
-		saveTemplate,
-		startEditTemplate,
-		clearTemplateEditor,
-		deleteTemplateById,
 		toggleSelectedUserContext,
 		addFiles,
 		removeFile,
@@ -63,9 +52,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 		zoomIn,
 		bottomRef,
 		inputRef,
-		inputClass,
 		panelClass,
-		labelClass,
 		subtleClass,
 		secondaryButtonClass,
 		iconButtonClass,
@@ -91,50 +78,41 @@ const AgentChatScreen = (p: AgentAppModel) => {
 						className={`w-3 h-3 rounded-full ${
 							isRunning
 								? 'bg-gpt-accent animate-pulse'
-								: isDark
-								? 'bg-gpt-muted'
 								: 'bg-gpt-muted'
 						}`}
 					></div>
-					<h1 className='navai-title text-gpt-text'>
-						NavAI
-					</h1>
+					<h1 className='navai-title text-gpt-text'>NavAI</h1>
+					<select
+						value={activeModelId}
+						onChange={(e) => setActiveModelId(e.target.value)}
+						className={`text-xs rounded-lg px-2 py-1.5 border focus:outline-none focus:ring-1 focus:ring-gpt-accent/30 transition-colors max-w-[160px] truncate ${
+							isDark
+								? 'bg-gpt-sidebar border-gpt-border text-gpt-text'
+								: 'bg-gpt-surface border-gpt-border text-gpt-text'
+						}`}
+						title={activeModelConfig?.modelName ?? 'No model'}
+					>
+						{modelConfigs.length === 0 && <option value=''>No models</option>}
+						{modelConfigs.map((cfg) => (
+							<option key={cfg.id} value={cfg.id}>{cfg.name}</option>
+						))}
+					</select>
 				</div>
 				<div className='flex gap-2'>
-					<button
-						onClick={zoomOut}
-						className={iconButtonClass}
-						title='Zoom out'
-						aria-label='Zoom out'
-					>
+					<button onClick={zoomOut} className={iconButtonClass} title='Zoom out' aria-label='Zoom out'>
 						<ZoomOutIcon />
 					</button>
-					<button
-						onClick={zoomIn}
-						className={iconButtonClass}
-						title='Zoom in'
-						aria-label='Zoom in'
-					>
+					<button onClick={zoomIn} className={iconButtonClass} title='Zoom in' aria-label='Zoom in'>
 						<ZoomInIcon />
 					</button>
 					{isRunning && (
 						<button
-							onClick={() =>
-								(window as any).stopAgent && (window as any).stopAgent()
-							}
+							onClick={() => (window as any).stopAgent?.()}
 							className='inline-flex h-10 shrink-0 px-3 items-center justify-center rounded-xl bg-gpt-danger-soft text-gpt-danger hover:bg-gpt-danger-soft/80 transition-colors text-xs font-medium'
 						>
 							STOP
 						</button>
 					)}
-					<button
-						onClick={() => setShowTemplatePanel((v) => !v)}
-						className={showTemplatePanel ? iconButtonActiveClass : iconButtonClass}
-						title='Templates'
-						aria-label='Templates'
-					>
-						<TemplatesIcon />
-					</button>
 					<button
 						onClick={() => setShowHistoryPanel((v) => !v)}
 						className={showHistoryPanel ? iconButtonActiveClass : iconButtonClass}
@@ -143,20 +121,10 @@ const AgentChatScreen = (p: AgentAppModel) => {
 					>
 						<HistoryIcon />
 					</button>
-					<button
-						onClick={startNewChat}
-						className={iconButtonClass}
-						title='New chat'
-						aria-label='New chat'
-					>
+					<button onClick={startNewChat} className={iconButtonClass} title='New chat' aria-label='New chat'>
 						<NewChatIcon />
 					</button>
-					<button
-						onClick={() => setShowSettings(true)}
-						className={iconButtonClass}
-						title='Settings'
-						aria-label='Settings'
-					>
+					<button onClick={() => setShowSettings(true)} className={iconButtonClass} title='Settings' aria-label='Settings'>
 						<SettingsIcon />
 					</button>
 				</div>
@@ -419,30 +387,48 @@ const AgentChatScreen = (p: AgentAppModel) => {
 							>
 								Context ({selectedUserContextIds.length})
 							</button>
+							<button
+								onClick={() => setShowTemplatePicker((prev) => !prev)}
+								disabled={templates.length === 0}
+								className={`text-xs px-3 py-1 rounded-full border ${
+									showTemplatePicker
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
+								} ${templates.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+							>
+								Templates
+							</button>
 						</div>
 						{showUserContextPicker && (
-							<div
-								className={`mb-3 rounded-lg border p-2 text-xs ${
-									isDark
-										? 'border-gpt-border bg-gpt-surface'
-										: 'border-gpt-border bg-gpt-surface'
-								}`}
-							>
+							<div className={`mb-3 rounded-lg border p-2 text-xs ${isDark ? 'border-gpt-border bg-gpt-surface' : 'border-gpt-border bg-gpt-surface'}`}>
 								{userContexts.length === 0 ? (
 									<div className={subtleClass}>No user context available.</div>
 								) : (
 									<div className='space-y-1'>
 										{userContexts.map((context) => (
-											<label
-												key={context.id}
-												className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'
-											>
-												<input
-													type='checkbox'
-													checked={selectedUserContextIds.includes(context.id)}
-													onChange={() => toggleSelectedUserContext(context.id)}
-												/>
+											<label key={context.id} className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'>
+												<input type='checkbox' checked={selectedUserContextIds.includes(context.id)} onChange={() => toggleSelectedUserContext(context.id)} />
 												<span className='truncate'>{context.name}</span>
+											</label>
+										))}
+									</div>
+								)}
+							</div>
+						)}
+						{showTemplatePicker && (
+							<div className={`mb-3 rounded-lg border p-2 text-xs ${isDark ? 'border-gpt-border bg-gpt-surface' : 'border-gpt-border bg-gpt-surface'}`}>
+								{templates.length === 0 ? (
+									<div className={subtleClass}>No templates. Add them in settings.</div>
+								) : (
+									<div className='space-y-1'>
+										<label className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'>
+											<input type='radio' name='tpl' checked={!activeTemplateId} onChange={() => setActiveTemplateId('')} />
+											<span>None</span>
+										</label>
+										{templates.map((t) => (
+											<label key={t.id} className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'>
+												<input type='radio' name='tpl' checked={activeTemplateId === t.id} onChange={() => setActiveTemplateId(t.id)} />
+												<span className='truncate'>{t.name}</span>
 											</label>
 										))}
 									</div>
@@ -526,13 +512,13 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 							}`}
 						>
-							Model: {modelName} | Mode: {interactionMode === 'ask' ? 'Ask' : 'Agent'}
+							Model: {activeModelConfig?.modelName ?? 'No model'} | Mode: {interactionMode === 'ask' ? 'Ask' : 'Agent'}
 						</div>
 						</div>
 					</div>
 				</div>
 
-				{(showTemplatePanel || showHistoryPanel) && (
+				{showHistoryPanel && (
 					<div
 						className={`w-72 border-l ${
 							isDark
@@ -540,212 +526,26 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								: 'border-gpt-border bg-gpt-surface'
 						} p-3 space-y-3 overflow-y-auto`}
 					>
-						{showTemplatePanel && (
-							<div className={`${panelClass} rounded-lg p-4`}>
-								<div className='flex items-center justify-between mb-3'>
-									<div className='text-xs font-semibold text-gpt-accent uppercase tracking-wide'>
-										Prompt Templates
-									</div>
-									<button
-										onClick={() => {
-											clearTemplateEditor();
-											setShowTemplateForm(true);
-										}}
-										className={`text-xs px-2 py-1 rounded border ${
-											isDark
-												? 'text-gpt-accent border-gpt-accent/60'
-												: 'text-gpt-success border-gpt-success/60'
-										}`}
-										title='New template'
-									>
-										＋
-									</button>
-								</div>
-								<div className='space-y-4'>
-									<div>
-										<label className={`block text-sm mb-2 ${labelClass}`}>
-											Saved Templates
-										</label>
-										{templates.length === 0 ? (
-											<div className={`text-xs ${subtleClass}`}>
-												No templates yet.
-											</div>
-										) : (
-											<div className='space-y-2'>
-												{templates.map((t) => (
-													<div
-														key={t.id}
-														className={`relative rounded border px-2 py-2 text-xs ${
-															isDark
-																? 'border-gpt-border bg-gpt-surface/60'
-																: 'border-gpt-border bg-gpt-surface/35'
-														}`}
-													>
-														<button
-															onClick={() => {
-																setActiveTemplateId(t.id);
-																setTask(t.content);
-															}}
-															className='w-full text-left'
-															title='Load into task input'
-														>
-															<div className='truncate'>{t.name}</div>
-															<div
-																className={`truncate ${
-																	isDark ? 'text-gpt-muted' : 'text-gpt-muted'
-																}`}
-															>
-																{t.content.slice(0, 80)}
-																{t.content.length > 80 ? '…' : ''}
-															</div>
-														</button>
-														<button
-															onClick={() =>
-																setOpenTemplateMenuId(
-																	openTemplateMenuId === t.id ? null : t.id
-																)
-															}
-															className={`absolute top-2 right-2 text-xs px-2 py-1 rounded border ${
-																isDark
-																	? 'border-gpt-border text-gpt-muted hover:text-gpt-text'
-																	: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
-															}`}
-															title='More'
-														>
-															⋯
-														</button>
-														{openTemplateMenuId === t.id && (
-															<div
-																className={`absolute right-2 top-9 z-10 rounded border p-1 text-xs ${
-																	isDark
-																		? 'bg-gpt-surface border-gpt-border'
-																		: 'bg-gpt-surface border-gpt-border'
-																}`}
-															>
-																<button
-																	onClick={() => {
-																		setOpenTemplateMenuId(null);
-																		startEditTemplate(t.id);
-																	}}
-																	className={`block w-full text-left px-2 py-1 rounded ${
-																		isDark
-																			? 'hover:bg-gpt-elevated'
-																			: 'hover:bg-gpt-surface'
-																	}`}
-																>
-																	Edit
-																</button>
-																<button
-																	onClick={() => deleteTemplateById(t.id)}
-																	className={`block w-full text-left px-2 py-1 rounded ${
-																		isDark
-																			? 'text-gpt-danger hover:bg-gpt-elevated'
-																			: 'text-gpt-danger hover:bg-gpt-surface'
-																	}`}
-																>
-																	Delete
-																</button>
-															</div>
-														)}
-													</div>
-												))}
-											</div>
-										)}
-									</div>
-									<div>
-										<label className={`block text-sm mb-1 ${labelClass}`}>
-											Active Template
-										</label>
-										<select
-											className={inputClass}
-											value={activeTemplateId}
-											onChange={(e) => setActiveTemplateId(e.target.value)}
-										>
-											<option value=''>None</option>
-											{templates.map((t) => (
-												<option key={t.id} value={t.id}>
-													{t.name}
-												</option>
-											))}
-										</select>
-									</div>
-
-									{showTemplateForm && (
-										<div className='space-y-3'>
-											<div>
-												<label className={`block text-sm mb-1 ${labelClass}`}>
-													Template Name
-												</label>
-												<input
-													className={inputClass}
-													value={templateName}
-													onChange={(e) => setTemplateName(e.target.value)}
-													placeholder='e.g. Job Application'
-												/>
-											</div>
-											<div>
-												<label className={`block text-sm mb-1 ${labelClass}`}>
-													Template Content
-												</label>
-												<textarea
-													className={`w-full rounded p-2 text-sm h-28 ${
-														isDark
-															? 'bg-gpt-surface border border-gpt-border text-gpt-text placeholder:text-gpt-muted'
-															: 'bg-gpt-surface border border-gpt-border'
-													}`}
-													value={templateContent}
-													onChange={(e) => setTemplateContent(e.target.value)}
-													placeholder='Add system-level instructions or constraints...'
-												/>
-											</div>
-											<div className='flex gap-2'>
-												<button
-													onClick={saveTemplate}
-													className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-4 py-2 text-sm flex-1'
-												>
-													{editingTemplateId
-														? 'Update Template'
-														: 'Save Template'}
-												</button>
-												<button
-													onClick={clearTemplateEditor}
-													className={`${secondaryButtonClass} rounded px-4 py-2 text-sm`}
-												>
-													Cancel
-												</button>
-											</div>
-										</div>
-									)}
-								</div>
+						<div className={`${panelClass} rounded-lg p-4`}>
+							<div
+								className={`text-xs font-semibold mb-3 uppercase tracking-wide ${
+									isDark ? 'text-gpt-text' : 'text-gpt-muted'
+								}`}
+							>
+								Session History
 							</div>
-						)}
-
-						{showHistoryPanel && (
-							<div className={`${panelClass} rounded-lg p-4`}>
-								<div
-									className={`text-xs font-semibold mb-3 uppercase tracking-wide ${
-										isDark ? 'text-gpt-text' : 'text-gpt-muted'
-									}`}
+							<div className='flex items-center justify-between'>
+								<div className={`text-xs ${isDark ? 'text-gpt-muted' : 'text-gpt-muted'}`}>
+									Messages: {messages.length}
+								</div>
+								<button
+									onClick={clearSession}
+									className={`${secondaryButtonClass} rounded px-4 py-2 text-xs`}
 								>
-									Session History
-								</div>
-								<div className='flex items-center justify-between'>
-									<div
-										className={`text-xs ${
-											isDark ? 'text-gpt-muted' : 'text-gpt-muted'
-										}`}
-									>
-										Messages: {messages.length}
-									</div>
-									<button
-										onClick={clearSession}
-										className={`${secondaryButtonClass} rounded px-4 py-2 text-xs`}
-									>
-										Clear History
-									</button>
-								</div>
+									Clear History
+								</button>
 							</div>
-						)}
+						</div>
 					</div>
 				)}
 			</div>

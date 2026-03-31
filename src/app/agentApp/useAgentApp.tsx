@@ -21,6 +21,7 @@ import type { AttachedFile } from '../types/AttachedFile';
 import type { AssetFile } from '../types/AssetFile';
 import type { AgentSkill } from '../types/AgentSkill';
 import type { UserContextEntry } from '../types/UserContextEntry';
+import type { ModelConfig } from '../types/ModelConfig';
 import {
 	sessionIdKey,
 	assetsStorageKey,
@@ -32,6 +33,8 @@ import {
 	uiZoomMax,
 	uiZoomStep,
 	uiZoomDefault,
+	modelConfigsStorageKey,
+	activeModelIdStorageKey,
 } from '../agentStorageConstants';
 import getSessionMessagesKey from '../getSessionMessagesKey';
 import createSessionId from '../createSessionId';
@@ -62,21 +65,33 @@ const useAgentApp = () => {
 				: 'agent'
 	);
 
-	// Settings State
-	const [baseUrl, setBaseUrl] = useState(
-		() => localStorage.getItem('agent_base_url') || 'http://localhost:11434/v1'
+	// Model Configs State
+	const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>(() => {
+		try {
+			const raw = localStorage.getItem(modelConfigsStorageKey);
+			if (!raw) return [];
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) return [];
+			return parsed.filter(
+				(item: any) => item?.id && item?.name && item?.baseUrl && item?.modelName
+			);
+		} catch {
+			return [];
+		}
+	});
+	const [activeModelId, setActiveModelId] = useState(
+		() => localStorage.getItem(activeModelIdStorageKey) || ''
 	);
-	const [apiKey, setApiKey] = useState(
-		() => localStorage.getItem('agent_api_key') || ''
-	);
-	const [modelName, setModelName] = useState(
-		() => localStorage.getItem('agent_model') || 'gpt-3.5-turbo'
-	);
-	const [availableModels, setAvailableModels] = useState<string[]>([]);
-	const [useManualModel, setUseManualModel] = useState(false);
-	const [supportsVision, setSupportsVision] = useState(
-		() => localStorage.getItem('agent_supports_vision') === 'true'
-	);
+	const [showModelForm, setShowModelForm] = useState(false);
+	const [editingModelId, setEditingModelId] = useState<string | null>(null);
+	const [modelFormName, setModelFormName] = useState('');
+	const [modelFormBaseUrl, setModelFormBaseUrl] = useState('http://localhost:11434/v1');
+	const [modelFormApiKey, setModelFormApiKey] = useState('');
+	const [modelFormModelName, setModelFormModelName] = useState('');
+	const [modelFormSupportsVision, setModelFormSupportsVision] = useState(false);
+	const [modelFormUseManual, setModelFormUseManual] = useState(false);
+	const [modelFormAvailableModels, setModelFormAvailableModels] = useState<string[]>([]);
+	const [showDiscardDialog, setShowDiscardDialog] = useState(false);
 	const [maxSteps, setMaxSteps] = useState(
 		() => Number(localStorage.getItem('agent_max_steps') || '30') || 30
 	);
@@ -145,9 +160,11 @@ const useAgentApp = () => {
 	const [assets, setAssets] = useState<AssetFile[]>([]);
 	const [sessionLoaded, setSessionLoaded] = useState(false);
 	const [sessionId, setSessionId] = useState(() => resolveInitialSessionId());
-	const [showTemplatePanel, setShowTemplatePanel] = useState(false);
+	const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 	const [showHistoryPanel, setShowHistoryPanel] = useState(false);
-	const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false);
+	const [isModelsSettingsOpen, setIsModelsSettingsOpen] = useState(false);
+	const [isRuntimeControlsOpen, setIsRuntimeControlsOpen] = useState(false);
+	const [isPromptTemplatesSettingsOpen, setIsPromptTemplatesSettingsOpen] = useState(false);
 	const [isMcpSettingsOpen, setIsMcpSettingsOpen] = useState(false);
 	const [isAssetsSettingsOpen, setIsAssetsSettingsOpen] = useState(false);
 	const [isAgentCreatedAssetsOpen, setIsAgentCreatedAssetsOpen] = useState(
@@ -246,6 +263,8 @@ const useAgentApp = () => {
 	const continueResolverRef = useRef<(() => void) | null>(null);
 	const [waitingForUserAction, setWaitingForUserAction] = useState(false);
 
+	const activeModelConfig = modelConfigs.find(m => m.id === activeModelId) ?? modelConfigs[0] ?? null;
+
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
 	}, [messages]);
@@ -329,6 +348,14 @@ const useAgentApp = () => {
 	}, [activeTemplateId]);
 
 	useEffect(() => {
+		localStorage.setItem(modelConfigsStorageKey, JSON.stringify(modelConfigs));
+	}, [modelConfigs]);
+
+	useEffect(() => {
+		localStorage.setItem(activeModelIdStorageKey, activeModelId);
+	}, [activeModelId]);
+
+	useEffect(() => {
 		localStorage.setItem(mcpServersStorageKey, toMcpServersJsonText(mcpServers));
 	}, [mcpServers]);
 
@@ -388,53 +415,114 @@ const useAgentApp = () => {
 		localStorage.setItem(uiZoomStorageKey, String(uiZoom));
 	}, [uiZoom]);
 
-	// Save settings
 	const saveSettings = () => {
-		localStorage.setItem('agent_base_url', baseUrl);
-		localStorage.setItem('agent_api_key', apiKey);
-		localStorage.setItem('agent_model', modelName);
-		localStorage.setItem('agent_supports_vision', String(supportsVision));
-		localStorage.setItem(
-			'agent_max_steps',
-			String(Math.max(1, Math.floor(maxSteps)))
-		);
-		localStorage.setItem(
-			'agent_request_timeout_ms',
-			String(Math.max(1000, Math.floor(requestTimeoutMs)))
-		);
-		localStorage.setItem(
-			'agent_step_delay_ms',
-			String(Math.max(0, Math.floor(stepDelayMs)))
-		);
-		localStorage.setItem(
-			'agent_invalid_retry_base_ms',
-			String(Math.max(0, Math.floor(invalidRetryBaseMs)))
-		);
-		localStorage.setItem(
-			'agent_invalid_retry_increment_ms',
-			String(Math.max(0, Math.floor(invalidRetryIncrementMs)))
-		);
-		localStorage.setItem(
-			'agent_invalid_retry_max_ms',
-			String(Math.max(0, Math.floor(invalidRetryMaxMs)))
-		);
-		localStorage.setItem(
-			'agent_max_consecutive_failures',
-			String(Math.max(1, Math.floor(maxConsecutiveFailures)))
-		);
+		localStorage.setItem('agent_max_steps', String(Math.max(1, Math.floor(maxSteps))));
+		localStorage.setItem('agent_request_timeout_ms', String(Math.max(1000, Math.floor(requestTimeoutMs))));
+		localStorage.setItem('agent_step_delay_ms', String(Math.max(0, Math.floor(stepDelayMs))));
+		localStorage.setItem('agent_invalid_retry_base_ms', String(Math.max(0, Math.floor(invalidRetryBaseMs))));
+		localStorage.setItem('agent_invalid_retry_increment_ms', String(Math.max(0, Math.floor(invalidRetryIncrementMs))));
+		localStorage.setItem('agent_invalid_retry_max_ms', String(Math.max(0, Math.floor(invalidRetryMaxMs))));
+		localStorage.setItem('agent_max_consecutive_failures', String(Math.max(1, Math.floor(maxConsecutiveFailures))));
 		setShowSettings(false);
-		addMessage('system', `Settings Saved. Model: ${modelName}`);
+		setShowDiscardDialog(false);
+		addMessage('system', `Settings Saved.${activeModelConfig ? ` Model: ${activeModelConfig.modelName}` : ''}`);
 	};
 
-	const fetchModels = async () => {
-		addMessage('system', 'Fetching models...');
-		const models = await AgentBrain.fetchModels(baseUrl, apiKey);
-		if (models.length > 0) {
-			setAvailableModels(models);
-			addMessage('system', `Found ${models.length} models.`);
+	const fetchModelsForForm = async () => {
+		const url = modelFormBaseUrl.trim();
+		if (!url) return;
+		const models = await AgentBrain.fetchModels(url, modelFormApiKey);
+		if (models.length > 0) setModelFormAvailableModels(models);
+	};
+
+	const saveModelConfig = () => {
+		const name = modelFormName.trim();
+		const baseUrl = modelFormBaseUrl.trim();
+		const modelName = modelFormModelName.trim();
+		if (!name || !baseUrl || !modelName) return;
+		if (editingModelId) {
+			setModelConfigs(prev => prev.map(m =>
+				m.id === editingModelId
+					? { ...m, name, baseUrl, apiKey: modelFormApiKey, modelName, supportsVision: modelFormSupportsVision }
+					: m
+			));
 		} else {
-			addMessage('system', 'No models found or connection failed.');
+			const id = `model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+			const newConfig: ModelConfig = { id, name, baseUrl, apiKey: modelFormApiKey, modelName, supportsVision: modelFormSupportsVision };
+			setModelConfigs(prev => [...prev, newConfig]);
+			if (!activeModelId) setActiveModelId(id);
 		}
+		clearModelForm();
+	};
+
+	const startEditModelConfig = (id: string) => {
+		const config = modelConfigs.find(m => m.id === id);
+		if (!config) return;
+		setEditingModelId(config.id);
+		setModelFormName(config.name);
+		setModelFormBaseUrl(config.baseUrl);
+		setModelFormApiKey(config.apiKey);
+		setModelFormModelName(config.modelName);
+		setModelFormSupportsVision(config.supportsVision);
+		setModelFormUseManual(false);
+		setModelFormAvailableModels([]);
+		setShowModelForm(true);
+	};
+
+	const clearModelForm = () => {
+		setEditingModelId(null);
+		setModelFormName('');
+		setModelFormBaseUrl('http://localhost:11434/v1');
+		setModelFormApiKey('');
+		setModelFormModelName('');
+		setModelFormSupportsVision(false);
+		setModelFormUseManual(false);
+		setModelFormAvailableModels([]);
+		setShowModelForm(false);
+	};
+
+	const deleteModelConfigById = (id: string) => {
+		const config = modelConfigs.find(m => m.id === id);
+		if (!config) return;
+		const ok = window.confirm(`Delete model "${config.name}"?\nThis action cannot be undone.`);
+		if (!ok) return;
+		const remaining = modelConfigs.filter(m => m.id !== id);
+		setModelConfigs(remaining);
+		if (activeModelId === id) setActiveModelId(remaining[0]?.id ?? '');
+	};
+
+	const hasUnsavedRuntimeChanges = () => {
+		const g = (key: string, fb: string) => Number(localStorage.getItem(key) || fb) || Number(fb);
+		return (
+			maxSteps !== g('agent_max_steps', '30') ||
+			requestTimeoutMs !== g('agent_request_timeout_ms', '900000') ||
+			stepDelayMs !== g('agent_step_delay_ms', '1500') ||
+			invalidRetryBaseMs !== g('agent_invalid_retry_base_ms', '500') ||
+			invalidRetryIncrementMs !== g('agent_invalid_retry_increment_ms', '500') ||
+			invalidRetryMaxMs !== g('agent_invalid_retry_max_ms', '5000') ||
+			maxConsecutiveFailures !== g('agent_max_consecutive_failures', '3')
+		);
+	};
+
+	const attemptLeaveSettings = () => {
+		if (hasUnsavedRuntimeChanges()) {
+			setShowDiscardDialog(true);
+			return;
+		}
+		setShowSettings(false);
+	};
+
+	const confirmDiscardSettings = () => {
+		const g = (key: string, fb: string) => Number(localStorage.getItem(key) || fb) || Number(fb);
+		setMaxSteps(g('agent_max_steps', '30'));
+		setRequestTimeoutMs(g('agent_request_timeout_ms', '900000'));
+		setStepDelayMs(g('agent_step_delay_ms', '1500'));
+		setInvalidRetryBaseMs(g('agent_invalid_retry_base_ms', '500'));
+		setInvalidRetryIncrementMs(g('agent_invalid_retry_increment_ms', '500'));
+		setInvalidRetryMaxMs(g('agent_invalid_retry_max_ms', '5000'));
+		setMaxConsecutiveFailures(g('agent_max_consecutive_failures', '3'));
+		setShowDiscardDialog(false);
+		setShowSettings(false);
 	};
 
 	const clearSession = () => {
@@ -929,11 +1017,17 @@ const useAgentApp = () => {
 			Math.floor(maxConsecutiveFailures)
 		);
 
-		// Initial Brain
+		const modelCfg = activeModelConfig;
+		if (!modelCfg) {
+			addMessage('system', 'No model configured. Add a model in settings first.');
+			setIsRunning(false);
+			return;
+		}
+		const { supportsVision } = modelCfg;
 		const brain = new AgentBrain(
-			apiKey,
-			baseUrl,
-			modelName,
+			modelCfg.apiKey,
+			modelCfg.baseUrl,
+			modelCfg.modelName,
 			runtimeRequestTimeoutMs
 		);
 		const fileContext = buildFileContext();
@@ -1312,10 +1406,17 @@ const useAgentApp = () => {
 		setTask('');
 		const runtimeRequestTimeoutMs = Math.max(1000, Math.floor(requestTimeoutMs));
 
+		const modelCfg = activeModelConfig;
+		if (!modelCfg) {
+			addMessage('system', 'No model configured. Add a model in settings first.');
+			setIsRunning(false);
+			return;
+		}
+		const { supportsVision } = modelCfg;
 		const brain = new AgentBrain(
-			apiKey,
-			baseUrl,
-			modelName,
+			modelCfg.apiKey,
+			modelCfg.baseUrl,
+			modelCfg.modelName,
 			runtimeRequestTimeoutMs
 		);
 		const fileContext = buildFileContext();
@@ -1483,18 +1584,30 @@ const useAgentApp = () => {
 		setShowSettings,
 		interactionMode,
 		setInteractionMode,
-		baseUrl,
-		setBaseUrl,
-		apiKey,
-		setApiKey,
-		modelName,
-		setModelName,
-		availableModels,
-		setAvailableModels,
-		useManualModel,
-		setUseManualModel,
-		supportsVision,
-		setSupportsVision,
+		modelConfigs,
+		setModelConfigs,
+		activeModelId,
+		setActiveModelId,
+		activeModelConfig,
+		showModelForm,
+		setShowModelForm,
+		editingModelId,
+		setEditingModelId,
+		modelFormName,
+		setModelFormName,
+		modelFormBaseUrl,
+		setModelFormBaseUrl,
+		modelFormApiKey,
+		setModelFormApiKey,
+		modelFormModelName,
+		setModelFormModelName,
+		modelFormSupportsVision,
+		setModelFormSupportsVision,
+		modelFormUseManual,
+		setModelFormUseManual,
+		modelFormAvailableModels,
+		showDiscardDialog,
+		setShowDiscardDialog,
 		maxSteps,
 		setMaxSteps,
 		requestTimeoutMs,
@@ -1539,12 +1652,16 @@ const useAgentApp = () => {
 		setSessionLoaded,
 		sessionId,
 		setSessionId,
-		showTemplatePanel,
-		setShowTemplatePanel,
+		showTemplatePicker,
+		setShowTemplatePicker,
 		showHistoryPanel,
 		setShowHistoryPanel,
-		isModelSettingsOpen,
-		setIsModelSettingsOpen,
+		isModelsSettingsOpen,
+		setIsModelsSettingsOpen,
+		isRuntimeControlsOpen,
+		setIsRuntimeControlsOpen,
+		isPromptTemplatesSettingsOpen,
+		setIsPromptTemplatesSettingsOpen,
 		isMcpSettingsOpen,
 		setIsMcpSettingsOpen,
 		isAssetsSettingsOpen,
@@ -1604,7 +1721,14 @@ const useAgentApp = () => {
 		waitingForUserAction,
 		setWaitingForUserAction,
 		saveSettings,
-		fetchModels,
+		fetchModelsForForm,
+		saveModelConfig,
+		startEditModelConfig,
+		clearModelForm,
+		deleteModelConfigById,
+		attemptLeaveSettings,
+		confirmDiscardSettings,
+		hasUnsavedRuntimeChanges,
 		clearSession,
 		addMcpServerFromJson,
 		toggleMcpServer,

@@ -8,3 +8,5 @@ export const uiZoomMin = 0.7;
 export const uiZoomMax = 1.8;
 export const uiZoomStep = 0.1;
 export const uiZoomDefault = 1;
+export const modelConfigsStorageKey = 'agent_model_configs';
+export const activeModelIdStorageKey = 'agent_active_model_id';
