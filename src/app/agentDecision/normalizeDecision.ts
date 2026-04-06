@@ -31,8 +31,31 @@ const normalizeDecision = (decision: any) => {
 	) {
 		return { ...coerced, action: 'HOVER_COORDS' };
 	}
+	if (coerced.action === 'DRAG' && params.id) {
+		return { ...coerced, action: 'DRAG_ID' };
+	}
+	if (
+		coerced.action === 'DRAG' &&
+		typeof params.x === 'number' &&
+		typeof params.y === 'number'
+	) {
+		return { ...coerced, action: 'DRAG_COORDS' };
+	}
 	if (coerced.action === 'SELECT' && params.id)
 		return { ...coerced, action: 'SELECT_ID' };
+	if (
+		coerced.action === 'DOUBLE_CLICK' &&
+		!params.id &&
+		!params.label &&
+		typeof params.x === 'number' &&
+		typeof params.y === 'number'
+	) {
+		return coerced;
+	}
+	if (coerced.action === 'CLEAR' && params.id)
+		return coerced;
+	if (coerced.action === 'FOCUS' && params.id)
+		return coerced;
 	return coerced;
 };
 

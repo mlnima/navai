@@ -2,6 +2,7 @@ const repairJson = (raw: string) => {
 	let cleaned = raw.trim();
 	cleaned = cleaned.replace(/```json|```/gi, '');
 	cleaned = cleaned.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+	cleaned = cleaned.replace(/=>/g, ':');
 	cleaned = cleaned.replace(/\/\/.*$/gm, '');
 	cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
 	cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');

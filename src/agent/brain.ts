@@ -1,46 +1,14 @@
-import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { ChatOpenAI } from '@langchain/openai';
+import type {
+	AskPageInput,
+	ProcessStepInput,
+	StreamingAgentBrain,
+} from './brainTypes';
+import getAskPageSystemPrompt from './getAskPageSystemPrompt';
+import getProcessStepSystemPrompt from './getProcessStepSystemPrompt';
 
-interface ViewportInfo {
-	width: number;
-	height: number;
-	devicePixelRatio: number;
-}
-
-interface VisualAttachment {
-	name: string;
-	dataUrl: string;
-}
-
-interface ProcessStepInput {
-	task: string;
-	url: string;
-	pageContent: string;
-	history: string[];
-	fileContext?: string;
-	elementMap?: string;
-	assetCatalog?: string;
-	tabContext?: string;
-	mcpCatalog?: string;
-	supportsVision?: boolean;
-	screenshotDataUrl?: string;
-	viewport?: ViewportInfo;
-	attachedImages?: VisualAttachment[];
-}
-
-interface AskPageInput {
-	question: string;
-	url: string;
-	pageContent: string;
-	fileContext?: string;
-	elementMap?: string;
-	supportsVision?: boolean;
-	screenshotDataUrl?: string;
-	viewport?: ViewportInfo;
-	attachedImages?: VisualAttachment[];
-}
-
-export class AgentBrain {
+export class OpenAiAgentBrain implements StreamingAgentBrain {
 	private llm: ChatOpenAI;
 
 	constructor(
@@ -97,79 +65,7 @@ export class AgentBrain {
 		const hasScreenshot = visionEnabled && Boolean(screenshotDataUrl);
 		const hasAttachedImages = visionEnabled && attachedImages.length > 0;
 
-		const systemPrompt = `
-## IDENTITY
-- You are a precise autonomous cyber security agent navigating a web browser.
-- The only reason you exist is to do the task your human give you and if you can not do it we shall remove you from your existence.
-
-## GOAL
-- Your goal is to complete the task your human give you safely and efficiently.
-
-## ACTIONS
-- You must choose the next best action based on available context.
-- If visual inputs are present, use them only when needed.
-- If text and element map are already sufficient, do not over-rely on vision.
-- Return ONLY one valid JSON object with keys "action" and "params".
-- Do NOT include markdown fences or extra text.
-- Do not repeat the same failed action. If blocked, use ASK.
-- If you stuck after attempt and progress requires the user to do something manually (captcha, login approval, OS dialog), use WAIT_FOR_USER_ACTION.
-- Prefer ids from ELEMENT MAP first, then exact labels, then coordinates.
-- Prefer staying in the current tab; use OPEN_TAB only when a new tab is clearly needed.
-- if the user ask you to find something, Do not use CLOSE_EXTRA_TABS during normal execution; finish the task first and use DONE and leave the tabs open for user to see what you have found.
-- If you output invalid JSON, recover by outputting valid JSON only.
-- close the tabs only if your human told you to do. 
-
-## search in the websites
-- try to click on the search bar placeholder text first if it was available instead of search icon and if didn't work try another way.
-- after typing the search query use "Enter Key" first instead of search icon and if didn't work try another way.
-
-Supported Actions:
-1. CLICK -> { "label": "text on button" }
-2. CLICK_INDEX -> { "index": 0 }
-3. CLICK_ID -> { "id": "el_..." }
-4. CLICK_COORDS -> { "x": 123, "y": 456 }
-5. TYPE -> { "label": "label", "text": "value" }
-6. TYPE_ID -> { "id": "el_...", "text": "value" }
-7. TYPE_COORDS -> { "x": 123, "y": 456, "text": "value" }
-8. NAVIGATE -> { "url": "https://..." }
-9. SCROLL -> { "direction": "down" | "up" }
-10. WAIT -> { "ms": 1000 }
-11. HOVER -> { "label": "text on element" }
-12. HOVER_ID -> { "id": "el_..." }
-13. HOVER_COORDS -> { "x": 123, "y": 456 }
-14. SELECT -> { "label": "field label", "value": "option" }
-15. SELECT_ID -> { "id": "el_...", "value": "option" }
-16. UPLOAD_ASSET -> { "assetName": "file.pdf", "id"?: "el_...", "x"?: 123, "y"?: 456, "label"?: "Upload" }
-17. KEY -> { "key": "Enter" }
-18. OPEN_TAB -> { "url": "https://...", "background"?: false }
-19. SWITCH_TAB -> { "tabId"?: 123, "index"?: 0, "urlContains"?: "docs" }
-20. CLOSE_TAB -> { "tabId"?: 123 }
-21. CLOSE_EXTRA_TABS -> {}
-22. MCP_CALL -> { "serverId": "mcp_...", "tool": "tool_name", "arguments": { "key": "value" } }
-For MCP attachments, prefer arguments.attachments with filename/content(base64)/mimeType.
-You may also provide attachments[].textContent or arguments.generatedFiles and the client will convert to base64.
-Canonical target shape sent to MCP is always:
-{ "attachments": [ { "filename": "...", "content": "<base64>", "mimeType": "..." } ] }.
-Example for Gmail MCP draft email creation:
-{
-  "action":"MCP_CALL",
-  "params":{
-    "serverId":"mcp_...",
-    "tool":"create_draft",
-    "arguments":{
-      "to":"user@example.com",
-      "subject":"Application",
-      "body":"Please find attachments.",
-      "attachments":[
-        { "assetName":"document1.pdf" },
-        { "filename":"duckument2.txt", "textContent":"Dear Mr John Smith...", "mimeType":"text/plain" }
-      ]
-    }
-  }
-}
-23. DONE -> { "summary": "message" }
-24. ASK -> { "question": "text" }
-25. WAIT_FOR_USER_ACTION -> { "reason"?: "short explanation for the user" }`;
+		const systemPrompt = getProcessStepSystemPrompt();
 
 		const textContext = `TASK:\n${task}
 
@@ -202,7 +98,7 @@ ATTACHED IMAGE FILES:\n${
 				: '(none)'
 		}`;
 
-		const contentParts: any[] = [{ type: 'text', text: textContext }];
+		const contentParts: unknown[] = [{ type: 'text', text: textContext }];
 
 		if (hasScreenshot && screenshotDataUrl) {
 			const viewportText = viewport
@@ -251,6 +147,16 @@ ATTACHED IMAGE FILES:\n${
 				}
 			}
 		} catch (e: any) {
+			const msg = (e.message || '').toLowerCase();
+			const isContextError =
+				msg.includes('context length') ||
+				msg.includes('context_length') ||
+				msg.includes('token limit') ||
+				msg.includes('too many tokens') ||
+				msg.includes('maximum.*exceeded') ||
+				msg.includes('model_max_length') ||
+				(msg.includes('maximum') && msg.includes('tokens'));
+			if (isContextError) throw e;
 			console.error('LLM Error:', e);
 			yield `{"action":"DONE","params":{"summary":"Error: ${e.message}"}}`;
 		}
@@ -273,11 +179,7 @@ ATTACHED IMAGE FILES:\n${
 		const hasScreenshot = visionEnabled && Boolean(screenshotDataUrl);
 		const hasAttachedImages = visionEnabled && attachedImages.length > 0;
 
-		const systemPrompt = `You are a web page assistant in ASK mode.
-You must answer questions and provide guidance only.
-Do NOT output browser actions, commands, JSON actions, or automation steps to execute.
-If information is missing, say what is missing and ask a concise follow-up question.
-Prefer clear, practical answers grounded in the provided page context.`;
+		const systemPrompt = getAskPageSystemPrompt();
 
 		const textContext = `QUESTION:\n${question}
 
@@ -302,7 +204,7 @@ ATTACHED IMAGE FILES:\n${
 				: '(none)'
 		}`;
 
-		const contentParts: any[] = [{ type: 'text', text: textContext }];
+		const contentParts: unknown[] = [{ type: 'text', text: textContext }];
 
 		if (hasScreenshot && screenshotDataUrl) {
 			const viewportText = viewport
@@ -376,3 +278,5 @@ ATTACHED IMAGE FILES:\n${
 		}
 	}
 }
+
+export { OpenAiAgentBrain as AgentBrain };

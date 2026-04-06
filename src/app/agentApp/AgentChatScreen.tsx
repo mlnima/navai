@@ -1,12 +1,43 @@
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { parseAgentMessage } from '../../utils/parseAgentMessage';
 import ZoomOutIcon from '../icons/ZoomOutIcon';
 import ZoomInIcon from '../icons/ZoomInIcon';
 import HistoryIcon from '../icons/HistoryIcon';
 import NewChatIcon from '../icons/NewChatIcon';
 import SettingsIcon from '../icons/SettingsIcon';
+import getModelDisplayName from '../getModelDisplayName';
 import type { AgentAppModel } from './useAgentApp';
 
 const AgentChatScreen = (p: AgentAppModel) => {
+	const clampComposerHeight = (value: number) => {
+		const min = 180;
+		const max = Math.max(260, Math.floor(window.innerHeight * 0.75));
+		return Math.max(min, Math.min(max, Math.round(value)));
+	};
+	const [composerHeight, setComposerHeight] = useState(() => {
+		const raw = Number(localStorage.getItem('agent_composer_height') || '260');
+		return Number.isFinite(raw) ? clampComposerHeight(raw) : 260;
+	});
+	useEffect(() => {
+		localStorage.setItem('agent_composer_height', String(composerHeight));
+	}, [composerHeight]);
+
+	const startComposerResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+		event.preventDefault();
+		const startY = event.clientY;
+		const startHeight = composerHeight;
+		const onMove = (moveEvent: MouseEvent) => {
+			const delta = startY - moveEvent.clientY;
+			setComposerHeight(clampComposerHeight(startHeight + delta));
+		};
+		const onUp = () => {
+			window.removeEventListener('mousemove', onMove);
+			window.removeEventListener('mouseup', onUp);
+		};
+		window.addEventListener('mousemove', onMove);
+		window.addEventListener('mouseup', onUp);
+	};
+
 	const {
 		task,
 		setTask,
@@ -19,13 +50,19 @@ const AgentChatScreen = (p: AgentAppModel) => {
 		activeModelId,
 		setActiveModelId,
 		activeModelConfig,
+		mcpServers,
 		templates,
-		activeTemplateId,
-		setActiveTemplateId,
+		skills,
 		attachedFiles,
 		assets,
 		showTemplatePicker,
 		setShowTemplatePicker,
+		showMcpPicker,
+		setShowMcpPicker,
+		showSkillsPicker,
+		setShowSkillsPicker,
+		showAssetsPicker,
+		setShowAssetsPicker,
 		showHistoryPanel,
 		setShowHistoryPanel,
 		uiZoom,
@@ -38,6 +75,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 		selectedUserContextIds,
 		showUserContextPicker,
 		setShowUserContextPicker,
+		autoScrollEnabled,
 		waitingForUserAction,
 		clearSession,
 		toggleSelectedUserContext,
@@ -48,16 +86,22 @@ const AgentChatScreen = (p: AgentAppModel) => {
 		continueAfterUserAction,
 		computeAssetSuggestions,
 		applyAssetMention,
+		appendTemplateToTask,
+		appendMcpRefToTask,
+		appendSkillRefToTask,
+		appendAssetRefToTask,
 		zoomOut,
 		zoomIn,
 		bottomRef,
+		messagesContainerRef,
 		inputRef,
+		handleMessagesScroll,
+		toggleAutoScroll,
 		panelClass,
 		subtleClass,
 		secondaryButtonClass,
 		iconButtonClass,
 		iconButtonActiveClass,
-		activeTemplateDisplay,
 	} = p;
 	return (
 		<div
@@ -73,7 +117,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 						: 'border-gpt-border bg-gpt-surface'
 				} flex justify-between items-center`}
 			>
-				<div className='flex items-center gap-3'>
+				<div className='navai-topbar-main flex items-center gap-3'>
 					<div
 						className={`w-3 h-3 rounded-full ${
 							isRunning
@@ -90,7 +134,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								? 'bg-gpt-sidebar border-gpt-border text-gpt-text'
 								: 'bg-gpt-surface border-gpt-border text-gpt-text'
 						}`}
-						title={activeModelConfig?.modelName ?? 'No model'}
+						title={activeModelConfig ? getModelDisplayName(activeModelConfig) : 'No model'}
 					>
 						{modelConfigs.length === 0 && <option value=''>No models</option>}
 						{modelConfigs.map((cfg) => (
@@ -98,7 +142,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 						))}
 					</select>
 				</div>
-				<div className='flex gap-2'>
+				<div className='navai-topbar-actions flex gap-2'>
 					<button onClick={zoomOut} className={iconButtonClass} title='Zoom out' aria-label='Zoom out'>
 						<ZoomOutIcon />
 					</button>
@@ -132,7 +176,11 @@ const AgentChatScreen = (p: AgentAppModel) => {
 
 			<div className='flex-1 flex min-h-0' style={{ zoom: uiZoom }}>
 				<div className='flex-1 flex flex-col min-w-0'>
-					<div className='flex-1 overflow-y-auto'>
+					<div
+						ref={messagesContainerRef}
+						onScroll={handleMessagesScroll}
+						className='flex-1 overflow-y-auto'
+					>
 						<div className='navai-feed space-y-4'>
 							{messages.map((m, i) => (
 							<div
@@ -296,31 +344,22 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								: 'border-gpt-border bg-gpt-surface'
 						}`}
 					>
-						<div className='navai-composer-shell'>
+						<div
+							className='mx-auto mb-2 h-1.5 w-14 cursor-row-resize rounded-full bg-gpt-border/70 hover:bg-gpt-accent/70 transition-colors'
+							onMouseDown={startComposerResize}
+							title='Drag to resize prompt panel'
+							aria-label='Resize prompt panel'
+						/>
+						<div
+							className='navai-composer-shell flex min-h-0 flex-col overflow-y-auto'
+							style={{ height: `${composerHeight}px` }}
+						>
 						<div
 							className={`flex items-center justify-between text-xs mb-2 ${
 								isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 							}`}
 						>
-							<div>
-								Template:{' '}
-								{activeTemplateDisplay ? activeTemplateDisplay.name : 'None'}
-							</div>
-							<label
-								className={`cursor-pointer ${
-									isDark
-										? 'text-gpt-accent hover:text-gpt-accent-hover'
-										: 'text-gpt-accent hover:text-gpt-accent-hover'
-								}`}
-							>
-								📎
-								<input
-									type='file'
-									className='hidden'
-									multiple
-									onChange={(e) => addFiles(e.target.files)}
-								/>
-							</label>
+							<div />
 						</div>
 						{attachedFiles.length > 0 && (
 							<div className='flex flex-wrap gap-2 mb-3'>
@@ -349,11 +388,11 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								))}
 							</div>
 						)}
-						<div className='flex gap-2 mb-3'>
+						<div className='flex flex-wrap gap-2 mb-3'>
 							<button
 								onClick={() => setInteractionMode('agent')}
 								disabled={isRunning}
-								className={`text-xs px-3 py-1 rounded-full border ${
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
 									interactionMode === 'agent'
 										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
 										: isDark
@@ -366,7 +405,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 							<button
 								onClick={() => setInteractionMode('ask')}
 								disabled={isRunning}
-								className={`text-xs px-3 py-1 rounded-full border ${
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
 									interactionMode === 'ask'
 										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
 										: isDark
@@ -379,7 +418,7 @@ const AgentChatScreen = (p: AgentAppModel) => {
 							<button
 								onClick={() => setShowUserContextPicker((prev) => !prev)}
 								disabled={userContexts.length === 0}
-								className={`text-xs px-3 py-1 rounded-full border ${
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
 									showUserContextPicker
 										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
 										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
@@ -388,15 +427,58 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								Context ({selectedUserContextIds.length})
 							</button>
 							<button
+								onClick={() => setShowMcpPicker((prev) => !prev)}
+								disabled={mcpServers.length === 0}
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
+									showMcpPicker
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
+								} ${mcpServers.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+							>
+								MCP ({mcpServers.length})
+							</button>
+							<button
+								onClick={() => setShowSkillsPicker((prev) => !prev)}
+								disabled={skills.length === 0}
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
+									showSkillsPicker
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
+								} ${skills.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+							>
+								Skills ({skills.length})
+							</button>
+							<button
+								onClick={() => setShowAssetsPicker((prev) => !prev)}
+								disabled={assets.length === 0}
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
+									showAssetsPicker
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
+								} ${assets.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
+							>
+								Assets ({assets.length})
+							</button>
+							<button
 								onClick={() => setShowTemplatePicker((prev) => !prev)}
 								disabled={templates.length === 0}
-								className={`text-xs px-3 py-1 rounded-full border ${
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
 									showTemplatePicker
 										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
 										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
 								} ${templates.length === 0 ? 'opacity-60 cursor-not-allowed' : ''}`}
 							>
-								Templates
+								Templates ({templates.length})
+							</button>
+							<button
+								onClick={toggleAutoScroll}
+								className={`shrink-0 text-xs px-3 py-1 rounded-full border ${
+									autoScrollEnabled
+										? 'bg-gpt-accent text-gpt-on-accent border-gpt-accent'
+										: 'border-gpt-border text-gpt-muted hover:text-gpt-text'
+								}`}
+							>
+								Auto Scroll: {autoScrollEnabled ? 'On' : 'Off'}
 							</button>
 						</div>
 						{showUserContextPicker && (
@@ -420,25 +502,85 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								{templates.length === 0 ? (
 									<div className={subtleClass}>No templates. Add them in settings.</div>
 								) : (
-									<div className='space-y-1'>
-										<label className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'>
-											<input type='radio' name='tpl' checked={!activeTemplateId} onChange={() => setActiveTemplateId('')} />
-											<span>None</span>
-										</label>
+									<div className='flex flex-wrap gap-2'>
 										{templates.map((t) => (
-											<label key={t.id} className='flex items-center gap-2 cursor-pointer rounded px-2 py-1 hover:bg-gpt-elevated'>
-												<input type='radio' name='tpl' checked={activeTemplateId === t.id} onChange={() => setActiveTemplateId(t.id)} />
-												<span className='truncate'>{t.name}</span>
-											</label>
+											<button
+												key={t.id}
+												onClick={() => appendTemplateToTask(t.id)}
+												className='shrink-0 rounded-full border border-gpt-border px-3 py-1 text-xs text-gpt-text hover:bg-gpt-elevated'
+												title='Append template to prompt'
+											>
+												+ {t.name}
+											</button>
 										))}
 									</div>
 								)}
 							</div>
 						)}
-						<div className='flex gap-2 items-end rounded-3xl border border-gpt-border bg-gpt-surface px-2 py-2 shadow-sm transition-colors focus-within:border-gpt-accent/60 focus-within:ring-1 focus-within:ring-gpt-accent/25'>
+						{showMcpPicker && (
+							<div className={`mb-3 rounded-lg border p-2 text-xs ${isDark ? 'border-gpt-border bg-gpt-surface' : 'border-gpt-border bg-gpt-surface'}`}>
+								{mcpServers.length === 0 ? (
+									<div className={subtleClass}>No MCP servers available.</div>
+								) : (
+									<div className='flex flex-wrap gap-2'>
+										{mcpServers.map((server) => (
+											<button
+												key={server.id}
+												onClick={() => appendMcpRefToTask(server.name)}
+												className='shrink-0 rounded-full border border-gpt-border px-3 py-1 text-xs text-gpt-text hover:bg-gpt-elevated'
+												title='Append MCP reference'
+											>
+												+ {server.name}
+											</button>
+										))}
+									</div>
+								)}
+							</div>
+						)}
+						{showSkillsPicker && (
+							<div className={`mb-3 rounded-lg border p-2 text-xs ${isDark ? 'border-gpt-border bg-gpt-surface' : 'border-gpt-border bg-gpt-surface'}`}>
+								{skills.length === 0 ? (
+									<div className={subtleClass}>No skills available.</div>
+								) : (
+									<div className='flex flex-wrap gap-2'>
+										{skills.map((skill) => (
+											<button
+												key={skill.id}
+												onClick={() => appendSkillRefToTask(skill.name)}
+												className='shrink-0 rounded-full border border-gpt-border px-3 py-1 text-xs text-gpt-text hover:bg-gpt-elevated'
+												title='Append skill reference'
+											>
+												+ {skill.name}
+											</button>
+										))}
+									</div>
+								)}
+							</div>
+						)}
+						{showAssetsPicker && (
+							<div className={`mb-3 rounded-lg border p-2 text-xs ${isDark ? 'border-gpt-border bg-gpt-surface' : 'border-gpt-border bg-gpt-surface'}`}>
+								{assets.length === 0 ? (
+									<div className={subtleClass}>No assets available.</div>
+								) : (
+									<div className='flex flex-wrap gap-2'>
+										{assets.map((asset) => (
+											<button
+												key={asset.id}
+												onClick={() => appendAssetRefToTask(asset.name)}
+												className='shrink-0 rounded-full border border-gpt-border px-3 py-1 text-xs text-gpt-text hover:bg-gpt-elevated'
+												title='Append asset reference'
+											>
+												+ {asset.name}
+											</button>
+										))}
+									</div>
+								)}
+							</div>
+						)}
+						<div className='flex min-h-[88px] flex-1 gap-2 items-end rounded-3xl border border-gpt-border bg-gpt-surface px-2 py-2 shadow-sm transition-colors focus-within:border-gpt-accent/60 focus-within:ring-1 focus-within:ring-gpt-accent/25'>
 							<textarea
 								ref={inputRef}
-								className={`flex-1 resize-none bg-transparent px-3 py-2 text-[14px] leading-6 focus:outline-none transition-all ${
+								className={`h-full min-h-[72px] flex-1 resize-none bg-transparent px-3 py-2 text-[14px] leading-6 focus:outline-none transition-all ${
 									isDark
 										? 'text-gpt-text placeholder:text-gpt-muted'
 										: 'text-gpt-text placeholder:text-gpt-muted'
@@ -467,12 +609,26 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								}}
 								disabled={isRunning}
 								onKeyDown={(e) => {
-									if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !isRunning) {
+									if (
+										e.key === 'Enter' &&
+										!e.shiftKey &&
+										!isRunning &&
+										!(e.nativeEvent as KeyboardEvent).isComposing
+									) {
 										e.preventDefault();
 										runCurrentMode();
 									}
 								}}
 							/>
+							<label className='inline-flex cursor-pointer items-center justify-center rounded-full px-4 py-2 text-sm font-medium text-gpt-text transition-all hover:bg-gpt-elevated/40'>
+								<span className='text-lg leading-none'>📎</span>
+								<input
+									type='file'
+									className='hidden'
+									multiple
+									onChange={(e) => addFiles(e.target.files)}
+								/>
+							</label>
 							<button
 								disabled={isRunning}
 								onClick={runCurrentMode}
@@ -512,7 +668,8 @@ const AgentChatScreen = (p: AgentAppModel) => {
 								isDark ? 'text-gpt-muted' : 'text-gpt-muted'
 							}`}
 						>
-							Model: {activeModelConfig?.modelName ?? 'No model'} | Mode: {interactionMode === 'ask' ? 'Ask' : 'Agent'}
+							Model:{' '}
+							{activeModelConfig ? getModelDisplayName(activeModelConfig) : 'No model'} | Mode: {interactionMode === 'ask' ? 'Ask' : 'Agent'}
 						</div>
 						</div>
 					</div>

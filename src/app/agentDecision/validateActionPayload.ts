@@ -10,6 +10,16 @@ const validateActionPayload = (decision: any) => {
 		typeof params.value === 'string' || typeof params.value === 'number';
 	const hasCoords =
 		typeof params.x === 'number' && typeof params.y === 'number';
+	const hasDragToCoords =
+		typeof params.toX === 'number' && typeof params.toY === 'number';
+	const hasDragToId =
+		typeof params.toId === 'string' && params.toId.trim().length > 0;
+	const hasDragToLabel =
+		typeof params.toLabel === 'string' && params.toLabel.trim().length > 0;
+	const hasDragDelta =
+		typeof params.deltaX === 'number' || typeof params.deltaY === 'number';
+	const hasDragDestination =
+		hasDragToCoords || hasDragToId || hasDragToLabel || hasDragDelta;
 
 	switch (decision.action) {
 		case 'CLICK':
@@ -34,6 +44,18 @@ const validateActionPayload = (decision: any) => {
 			return hasId ? '' : 'HOVER_ID requires params.id';
 		case 'HOVER_COORDS':
 			return hasCoords ? '' : 'HOVER_COORDS requires params.x and params.y';
+		case 'DRAG':
+			return (hasId || hasLabel || hasCoords) && hasDragDestination
+				? ''
+				: 'DRAG requires start target (id/label/x+y) and destination (toId/toLabel/toX+toY/deltaX or deltaY)';
+		case 'DRAG_ID':
+			return hasId && hasDragDestination
+				? ''
+				: 'DRAG_ID requires params.id and destination (toId/toLabel/toX+toY/deltaX or deltaY)';
+		case 'DRAG_COORDS':
+			return hasCoords && hasDragDestination
+				? ''
+				: 'DRAG_COORDS requires params.x, params.y and destination (toId/toLabel/toX+toY/deltaX or deltaY)';
 		case 'SELECT':
 			return hasLabel && hasValue
 				? ''
@@ -84,6 +106,20 @@ const validateActionPayload = (decision: any) => {
 			return typeof params.question === 'string' && params.question.trim()
 				? ''
 				: 'ASK requires params.question';
+		case 'DOUBLE_CLICK':
+			return hasId || hasLabel || hasCoords
+				? ''
+				: 'DOUBLE_CLICK requires params.id, params.label, or params.x/y';
+		case 'FOCUS':
+			return hasId || hasLabel
+				? ''
+				: 'FOCUS requires params.id or params.label';
+		case 'CLEAR':
+			return hasId || hasLabel
+				? ''
+				: 'CLEAR requires params.id or params.label';
+		case 'DONE':
+			return '';
 		default:
 			return '';
 	}

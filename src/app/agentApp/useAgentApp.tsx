@@ -1,5 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { AgentBrain } from '../../agent/brain';
+import { OpenAiAgentBrain } from '../../agent/brain';
+import createStreamingBrain from '../../agent/createStreamingBrain';
+import parseHfRepoId from '../../agent/parseHfRepoId';
+import normalizeGgufHfFilePathInput from '../normalizeGgufHfFilePathInput';
+import validateFullHfGgufFileUrl from '../validateFullHfGgufFileUrl';
+import getDefaultWebGpuContextWindowTokens from '../getDefaultWebGpuContextWindowTokens';
+import normalizeModelConfigs from '../normalizeModelConfigs';
+import normalizeWebGpuContextWindowTokens from '../normalizeWebGpuContextWindowTokens';
+import formatModelLoadError from '../formatModelLoadError';
+import deleteModelBlob from '../modelBlobDb/deleteModelBlob';
+import putModelBlob from '../modelBlobDb/putModelBlob';
+import testWebGpuModel from '../model/testWebGpuModel';
 import {
 	createTabSessionManager,
 	clearTabSessionState,
@@ -41,17 +52,44 @@ import createSessionId from '../createSessionId';
 import resolveInitialSessionId from '../resolveInitialSessionId';
 import normalizeSkillKey from '../normalizeSkillKey';
 import defaultSkillTemplate from '../defaultSkillTemplate';
-import parseAgentDecision from '../agentDecision/parseAgentDecision';
+import {
+	parseAgentDecisions,
+} from '../agentDecision/parseAgentDecision';
 import normalizeDecision from '../agentDecision/normalizeDecision';
 import validateActionPayload from '../agentDecision/validateActionPayload';
 import buildElementMapSummary from '../agentDecision/buildElementMapSummary';
 import hashString from '../agentDecision/hashString';
+import resolveClickFallbackUrl from '../agentDecision/resolveClickFallbackUrl';
 import captureVisibleTab from '../chrome/captureVisibleTab';
-import getCurrentTab from '../chrome/getCurrentTab';
+import executeTabActionInFrames from '../chrome/executeTabActionInFrames';
+import getTabStateFromFrames from '../chrome/getTabStateFromFrames';
+import resolveAgentTab from '../chrome/resolveAgentTab';
 import readFileAsText from '../file/readFileAsText';
 import readFileAsDataUrl from '../file/readFileAsDataUrl';
 import getSkillNameFromContent from '../getSkillNameFromContent';
 import enrichMcpArgumentsWithAssets from '../mcp/enrichMcpArgumentsWithAssets';
+import resolveRequestedMcpRefs from '../resolveRequestedMcpRefs';
+import resolveRequestedAssetRefs from '../resolveRequestedAssetRefs';
+import summarizeSession from '../summarizeSession';
+import testModelConnection from '../model/testModelConnection';
+
+type SettingsTransferCategory =
+	| 'models'
+	| 'runtime'
+	| 'mcpServers'
+	| 'userContexts'
+	| 'templates'
+	| 'skills';
+
+const settingsTransferDefaultSelection: Record<SettingsTransferCategory, boolean> =
+	{
+		models: true,
+		runtime: true,
+		mcpServers: true,
+		userContexts: true,
+		templates: true,
+		skills: true,
+	};
 
 const useAgentApp = () => {
 	const [task, setTask] = useState('');
@@ -70,11 +108,7 @@ const useAgentApp = () => {
 		try {
 			const raw = localStorage.getItem(modelConfigsStorageKey);
 			if (!raw) return [];
-			const parsed = JSON.parse(raw);
-			if (!Array.isArray(parsed)) return [];
-			return parsed.filter(
-				(item: any) => item?.id && item?.name && item?.baseUrl && item?.modelName
-			);
+			return normalizeModelConfigs(JSON.parse(raw));
 		} catch {
 			return [];
 		}
@@ -91,7 +125,27 @@ const useAgentApp = () => {
 	const [modelFormSupportsVision, setModelFormSupportsVision] = useState(false);
 	const [modelFormUseManual, setModelFormUseManual] = useState(false);
 	const [modelFormAvailableModels, setModelFormAvailableModels] = useState<string[]>([]);
+	const [modelFormTab, setModelFormTab] = useState<'api' | 'webgpu'>('api');
+	const [modelFormWebGpuBackend, setModelFormWebGpuBackend] = useState<'onnx' | 'gguf'>('onnx');
+	const [modelFormWebGpuSource, setModelFormWebGpuSource] = useState<
+		'hf' | 'upload' | 'url'
+	>('hf');
+	const [modelFormWebGpuHfOnnx, setModelFormWebGpuHfOnnx] = useState(
+		'onnx-community/Qwen3-0.6B-ONNX'
+	);
+	const [modelFormWebGpuHfGgufRepo, setModelFormWebGpuHfGgufRepo] = useState('');
+	const [modelFormWebGpuHfGgufFile, setModelFormWebGpuHfGgufFile] = useState('');
+	const [modelFormWebGpuGgufUrl, setModelFormWebGpuGgufUrl] = useState('');
+	const [modelFormGgufConfigError, setModelFormGgufConfigError] = useState('');
+	const [modelFormWebGpuUpload, setModelFormWebGpuUpload] = useState<File | null>(null);
+	const [modelFormWebGpuContextWindowTokens, setModelFormWebGpuContextWindowTokens] =
+		useState<number>(() => getDefaultWebGpuContextWindowTokens());
+	const [webGpuSaving, setWebGpuSaving] = useState(false);
 	const [showDiscardDialog, setShowDiscardDialog] = useState(false);
+	const [memoryEnabled, setMemoryEnabled] = useState(
+		() => localStorage.getItem('agent_memory_enabled') !== 'false'
+	);
+	const [isMemorySettingsOpen, setIsMemorySettingsOpen] = useState(false);
 	const [maxSteps, setMaxSteps] = useState(
 		() => Number(localStorage.getItem('agent_max_steps') || '30') || 30
 	);
@@ -140,6 +194,12 @@ const useAgentApp = () => {
 	const [mcpTestResultById, setMcpTestResultById] = useState<
 		Record<string, string>
 	>({});
+	const [modelTestingById, setModelTestingById] = useState<
+		Record<string, boolean>
+	>({});
+	const [modelTestResultById, setModelTestResultById] = useState<
+		Record<string, string>
+	>({});
 	const [templates, setTemplates] = useState<PromptTemplate[]>(() => {
 		try {
 			const raw = localStorage.getItem('agent_prompt_templates');
@@ -148,9 +208,6 @@ const useAgentApp = () => {
 			return [];
 		}
 	});
-	const [activeTemplateId, setActiveTemplateId] = useState(
-		() => localStorage.getItem('agent_active_template') || ''
-	);
 	const [editingTemplateId, setEditingTemplateId] = useState<string | null>(
 		null
 	);
@@ -161,6 +218,9 @@ const useAgentApp = () => {
 	const [sessionLoaded, setSessionLoaded] = useState(false);
 	const [sessionId, setSessionId] = useState(() => resolveInitialSessionId());
 	const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+	const [showMcpPicker, setShowMcpPicker] = useState(false);
+	const [showSkillsPicker, setShowSkillsPicker] = useState(false);
+	const [showAssetsPicker, setShowAssetsPicker] = useState(false);
 	const [showHistoryPanel, setShowHistoryPanel] = useState(false);
 	const [isModelsSettingsOpen, setIsModelsSettingsOpen] = useState(false);
 	const [isRuntimeControlsOpen, setIsRuntimeControlsOpen] = useState(false);
@@ -174,6 +234,12 @@ const useAgentApp = () => {
 		false
 	);
 	const [isSkillsSettingsOpen, setIsSkillsSettingsOpen] = useState(false);
+	const [isSettingsTransferOpen, setIsSettingsTransferOpen] = useState(false);
+	const [settingsTransferSelection, setSettingsTransferSelection] = useState<
+		Record<SettingsTransferCategory, boolean>
+	>(settingsTransferDefaultSelection);
+	const [settingsTransferJson, setSettingsTransferJson] = useState('');
+	const [settingsTransferStatus, setSettingsTransferStatus] = useState('');
 	const [uiZoom, setUiZoom] = useState(() => {
 		const raw = Number(localStorage.getItem(uiZoomStorageKey));
 		if (!Number.isFinite(raw)) return uiZoomDefault;
@@ -181,6 +247,7 @@ const useAgentApp = () => {
 	});
 	const [isDark, setIsDark] = useState(true);
 	const [showTemplateForm, setShowTemplateForm] = useState(false);
+	const [openModelMenuId, setOpenModelMenuId] = useState<string | null>(null);
 	const [openTemplateMenuId, setOpenTemplateMenuId] = useState<string | null>(
 		null
 	);
@@ -253,11 +320,15 @@ const useAgentApp = () => {
 	);
 	const [userContextName, setUserContextName] = useState('');
 	const [userContextContent, setUserContextContent] = useState('');
+	const [autoScrollEnabled, setAutoScrollEnabled] = useState(
+		() => localStorage.getItem('agent_auto_scroll_enabled') !== 'false'
+	);
 	const [openUserContextMenuId, setOpenUserContextMenuId] = useState<
 		string | null
 	>(null);
 
 	const bottomRef = useRef<HTMLDivElement>(null);
+	const messagesContainerRef = useRef<HTMLDivElement>(null);
 	const activeRef = useRef(true);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const continueResolverRef = useRef<(() => void) | null>(null);
@@ -266,8 +337,35 @@ const useAgentApp = () => {
 	const activeModelConfig = modelConfigs.find(m => m.id === activeModelId) ?? modelConfigs[0] ?? null;
 
 	useEffect(() => {
+		if (!autoScrollEnabled) return;
 		bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-	}, [messages]);
+	}, [messages, autoScrollEnabled]);
+
+	useEffect(() => {
+		localStorage.setItem('agent_auto_scroll_enabled', String(autoScrollEnabled));
+	}, [autoScrollEnabled]);
+
+	const isNearBottom = (el: HTMLElement) =>
+		el.scrollHeight - (el.scrollTop + el.clientHeight) <= 24;
+
+	const handleMessagesScroll = () => {
+		const container = messagesContainerRef.current;
+		if (!container) return;
+		const shouldEnable = isNearBottom(container);
+		setAutoScrollEnabled((prev) => (prev === shouldEnable ? prev : shouldEnable));
+	};
+
+	const toggleAutoScroll = () => {
+		setAutoScrollEnabled((prev) => {
+			const next = !prev;
+			if (next) {
+				requestAnimationFrame(() => {
+					bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+				});
+			}
+			return next;
+		});
+	};
 
 	useEffect(() => {
 		const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -344,10 +442,6 @@ const useAgentApp = () => {
 	}, [templates]);
 
 	useEffect(() => {
-		localStorage.setItem('agent_active_template', activeTemplateId);
-	}, [activeTemplateId]);
-
-	useEffect(() => {
 		localStorage.setItem(modelConfigsStorageKey, JSON.stringify(modelConfigs));
 	}, [modelConfigs]);
 
@@ -416,6 +510,7 @@ const useAgentApp = () => {
 	}, [uiZoom]);
 
 	const saveSettings = () => {
+		localStorage.setItem('agent_memory_enabled', String(memoryEnabled));
 		localStorage.setItem('agent_max_steps', String(Math.max(1, Math.floor(maxSteps))));
 		localStorage.setItem('agent_request_timeout_ms', String(Math.max(1000, Math.floor(requestTimeoutMs))));
 		localStorage.setItem('agent_step_delay_ms', String(Math.max(0, Math.floor(stepDelayMs))));
@@ -425,52 +520,277 @@ const useAgentApp = () => {
 		localStorage.setItem('agent_max_consecutive_failures', String(Math.max(1, Math.floor(maxConsecutiveFailures))));
 		setShowSettings(false);
 		setShowDiscardDialog(false);
-		addMessage('system', `Settings Saved.${activeModelConfig ? ` Model: ${activeModelConfig.modelName}` : ''}`);
+		addMessage(
+			'system',
+			`Settings Saved.${
+				activeModelConfig
+					? ` Model: ${
+							activeModelConfig.kind === 'api'
+								? activeModelConfig.modelName
+								: activeModelConfig.backend === 'onnx'
+									? activeModelConfig.source.type === 'huggingface'
+										? activeModelConfig.source.repoId
+										: activeModelConfig.source.fileName
+									: activeModelConfig.source.type === 'huggingface'
+										? `${activeModelConfig.source.repoId}/${activeModelConfig.source.fileName}`
+										: activeModelConfig.source.fileName
+						}`
+					: ''
+			}`
+		);
 	};
 
 	const fetchModelsForForm = async () => {
 		const url = modelFormBaseUrl.trim();
 		if (!url) return;
-		const models = await AgentBrain.fetchModels(url, modelFormApiKey);
+		const models = await OpenAiAgentBrain.fetchModels(url, modelFormApiKey);
 		if (models.length > 0) setModelFormAvailableModels(models);
 	};
 
-	const saveModelConfig = () => {
+	const saveModelConfig = async () => {
 		const name = modelFormName.trim();
-		const baseUrl = modelFormBaseUrl.trim();
-		const modelName = modelFormModelName.trim();
-		if (!name || !baseUrl || !modelName) return;
+		if (!name) return;
 		if (editingModelId) {
-			setModelConfigs(prev => prev.map(m =>
-				m.id === editingModelId
-					? { ...m, name, baseUrl, apiKey: modelFormApiKey, modelName, supportsVision: modelFormSupportsVision }
-					: m
-			));
-		} else {
-			const id = `model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-			const newConfig: ModelConfig = { id, name, baseUrl, apiKey: modelFormApiKey, modelName, supportsVision: modelFormSupportsVision };
-			setModelConfigs(prev => [...prev, newConfig]);
-			if (!activeModelId) setActiveModelId(id);
+			const existingEdit = modelConfigs.find((m) => m.id === editingModelId);
+			if (existingEdit?.kind === 'api' && modelFormTab !== 'api') return;
+			if (existingEdit?.kind === 'webgpu' && modelFormTab !== 'webgpu') return;
 		}
-		clearModelForm();
+		if (modelFormTab === 'api') {
+			const baseUrl = modelFormBaseUrl.trim();
+			const modelName = modelFormModelName.trim();
+			if (!baseUrl || !modelName) return;
+			if (editingModelId) {
+				setModelConfigs((prev) =>
+					prev.map((m) =>
+						m.id === editingModelId && m.kind === 'api'
+							? {
+									...m,
+									name,
+									baseUrl,
+									apiKey: modelFormApiKey,
+									modelName,
+									supportsVision: modelFormSupportsVision,
+								}
+							: m
+					)
+				);
+			} else {
+				const id = `model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+				const newConfig: ModelConfig = {
+					kind: 'api',
+					id,
+					name,
+					baseUrl,
+					apiKey: modelFormApiKey,
+					modelName,
+					supportsVision: modelFormSupportsVision,
+				};
+				setModelConfigs((prev) => [...prev, newConfig]);
+				if (!activeModelId) setActiveModelId(id);
+			}
+			clearModelForm();
+			return;
+		}
+		setWebGpuSaving(true);
+		try {
+			if (editingModelId) {
+				const existing = modelConfigs.find((m) => m.id === editingModelId);
+				if (existing?.kind === 'webgpu') {
+					setModelConfigs((prev) =>
+						prev.map((m) =>
+							m.id === editingModelId && m.kind === 'webgpu'
+								? {
+										...m,
+										name,
+										supportsVision: modelFormSupportsVision,
+										contextWindowTokens: normalizeWebGpuContextWindowTokens(
+											modelFormWebGpuContextWindowTokens,
+											m.backend === 'onnx' ? 'onnx' : 'gguf'
+										),
+									}
+								: m
+						)
+					);
+					clearModelForm();
+					return;
+				}
+			}
+			const id = `model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+			if (modelFormWebGpuBackend === 'onnx') {
+				if (modelFormWebGpuSource === 'hf') {
+					const repoId = parseHfRepoId(modelFormWebGpuHfOnnx);
+					if (!repoId) return;
+					const newConfig: ModelConfig = {
+						kind: 'webgpu',
+						id,
+						name,
+						backend: 'onnx',
+						supportsVision: modelFormSupportsVision,
+						contextWindowTokens: normalizeWebGpuContextWindowTokens(
+							modelFormWebGpuContextWindowTokens,
+							'onnx'
+						),
+						source: { type: 'huggingface', repoId },
+					};
+					setModelConfigs((prev) => [...prev, newConfig]);
+				} else {
+					const file = modelFormWebGpuUpload;
+					if (!file) return;
+					const blobId = `blob_${id}_onnx`;
+					await putModelBlob(blobId, file);
+					const newConfig: ModelConfig = {
+						kind: 'webgpu',
+						id,
+						name,
+						backend: 'onnx',
+						supportsVision: modelFormSupportsVision,
+						contextWindowTokens: normalizeWebGpuContextWindowTokens(
+							modelFormWebGpuContextWindowTokens,
+							'onnx'
+						),
+						source: {
+							type: 'upload',
+							fileName: file.name,
+							blobId,
+							byteSize: file.size,
+						},
+					};
+					setModelConfigs((prev) => [...prev, newConfig]);
+				}
+			} else {
+				if (modelFormWebGpuSource === 'hf') {
+					const repoId = parseHfRepoId(modelFormWebGpuHfGgufRepo);
+					const fileName = normalizeGgufHfFilePathInput(modelFormWebGpuHfGgufFile);
+					if (!repoId || !fileName) return;
+					if (!fileName.toLowerCase().endsWith('.gguf')) {
+						setModelFormGgufConfigError(
+							'Enter the repo-relative path to a .gguf file (not only the repo name).'
+						);
+						return;
+					}
+					setModelFormGgufConfigError('');
+					const newConfig: ModelConfig = {
+						kind: 'webgpu',
+						id,
+						name,
+						backend: 'gguf',
+						supportsVision: modelFormSupportsVision,
+						contextWindowTokens: normalizeWebGpuContextWindowTokens(
+							modelFormWebGpuContextWindowTokens,
+							'gguf'
+						),
+						source: { type: 'huggingface', repoId, fileName },
+					};
+					setModelConfigs((prev) => [...prev, newConfig]);
+				} else if (modelFormWebGpuSource === 'url') {
+					const v = validateFullHfGgufFileUrl(modelFormWebGpuGgufUrl);
+					if (!v.ok) {
+						setModelFormGgufConfigError(v.message);
+						return;
+					}
+					setModelFormGgufConfigError('');
+					const parsed = v.parsed;
+					const newConfig: ModelConfig = {
+						kind: 'webgpu',
+						id,
+						name,
+						backend: 'gguf',
+						supportsVision: modelFormSupportsVision,
+						contextWindowTokens: normalizeWebGpuContextWindowTokens(
+							modelFormWebGpuContextWindowTokens,
+							'gguf'
+						),
+						source: {
+							type: 'huggingface',
+							repoId: parsed.repoId,
+							fileName: parsed.fileName,
+						},
+					};
+					setModelConfigs((prev) => [...prev, newConfig]);
+				} else {
+					const file = modelFormWebGpuUpload;
+					if (!file) return;
+					const blobId = `blob_${id}_gguf`;
+					await putModelBlob(blobId, file);
+					const newConfig: ModelConfig = {
+						kind: 'webgpu',
+						id,
+						name,
+						backend: 'gguf',
+						supportsVision: modelFormSupportsVision,
+						contextWindowTokens: normalizeWebGpuContextWindowTokens(
+							modelFormWebGpuContextWindowTokens,
+							'gguf'
+						),
+						source: {
+							type: 'upload',
+							fileName: file.name,
+							blobId,
+							byteSize: file.size,
+						},
+					};
+					setModelConfigs((prev) => [...prev, newConfig]);
+				}
+			}
+			if (!activeModelId) setActiveModelId(id);
+			clearModelForm();
+		} finally {
+			setWebGpuSaving(false);
+		}
 	};
 
 	const startEditModelConfig = (id: string) => {
-		const config = modelConfigs.find(m => m.id === id);
+		const config = modelConfigs.find((m) => m.id === id);
 		if (!config) return;
+		setModelFormGgufConfigError('');
 		setEditingModelId(config.id);
 		setModelFormName(config.name);
-		setModelFormBaseUrl(config.baseUrl);
-		setModelFormApiKey(config.apiKey);
-		setModelFormModelName(config.modelName);
-		setModelFormSupportsVision(config.supportsVision);
-		setModelFormUseManual(false);
-		setModelFormAvailableModels([]);
+		if (config.kind === 'api') {
+			setModelFormTab('api');
+			setModelFormBaseUrl(config.baseUrl);
+			setModelFormApiKey(config.apiKey);
+			setModelFormModelName(config.modelName);
+			setModelFormSupportsVision(config.supportsVision);
+			setModelFormUseManual(false);
+			setModelFormAvailableModels([]);
+		} else {
+			setModelFormTab('webgpu');
+			setModelFormWebGpuBackend(config.backend);
+			setModelFormWebGpuContextWindowTokens(
+				normalizeWebGpuContextWindowTokens(
+					config.contextWindowTokens,
+					config.backend === 'onnx' ? 'onnx' : 'gguf'
+				)
+			);
+			if (config.backend === 'onnx') {
+				setModelFormSupportsVision(config.supportsVision);
+				if (config.source.type === 'huggingface') {
+					setModelFormWebGpuSource('hf');
+					setModelFormWebGpuHfOnnx(config.source.repoId);
+				} else {
+					setModelFormWebGpuSource('upload');
+					setModelFormWebGpuUpload(null);
+				}
+			} else {
+				setModelFormSupportsVision(config.supportsVision);
+				if (config.source.type === 'huggingface') {
+					setModelFormWebGpuSource('hf');
+					setModelFormWebGpuHfGgufRepo(config.source.repoId);
+					setModelFormWebGpuHfGgufFile(config.source.fileName);
+					setModelFormWebGpuGgufUrl('');
+				} else {
+					setModelFormWebGpuSource('upload');
+					setModelFormWebGpuUpload(null);
+					setModelFormWebGpuGgufUrl('');
+				}
+			}
+		}
 		setShowModelForm(true);
 	};
 
 	const clearModelForm = () => {
 		setEditingModelId(null);
+		setModelFormTab('api');
 		setModelFormName('');
 		setModelFormBaseUrl('http://localhost:11434/v1');
 		setModelFormApiKey('');
@@ -478,22 +798,60 @@ const useAgentApp = () => {
 		setModelFormSupportsVision(false);
 		setModelFormUseManual(false);
 		setModelFormAvailableModels([]);
+		setModelFormWebGpuBackend('onnx');
+		setModelFormWebGpuSource('hf');
+		setModelFormWebGpuHfOnnx('onnx-community/Qwen3-0.6B-ONNX');
+		setModelFormWebGpuHfGgufRepo('');
+		setModelFormWebGpuHfGgufFile('');
+		setModelFormWebGpuGgufUrl('');
+		setModelFormGgufConfigError('');
+		setModelFormWebGpuUpload(null);
+		setModelFormWebGpuContextWindowTokens(getDefaultWebGpuContextWindowTokens());
 		setShowModelForm(false);
 	};
 
-	const deleteModelConfigById = (id: string) => {
-		const config = modelConfigs.find(m => m.id === id);
+	const deleteModelConfigById = async (id: string) => {
+		const config = modelConfigs.find((m) => m.id === id);
 		if (!config) return;
 		const ok = window.confirm(`Delete model "${config.name}"?\nThis action cannot be undone.`);
 		if (!ok) return;
-		const remaining = modelConfigs.filter(m => m.id !== id);
+		if (config.kind === 'webgpu') {
+			if (config.backend === 'onnx' && config.source.type === 'upload') {
+				await deleteModelBlob(config.source.blobId);
+			}
+			if (config.backend === 'gguf' && config.source.type === 'upload') {
+				await deleteModelBlob(config.source.blobId);
+			}
+		}
+		const remaining = modelConfigs.filter((m) => m.id !== id);
 		setModelConfigs(remaining);
 		if (activeModelId === id) setActiveModelId(remaining[0]?.id ?? '');
 	};
 
+	const testModelConfigById = async (id: string) => {
+		const config = modelConfigs.find((item) => item.id === id);
+		if (!config) return;
+		setModelTestingById((prev) => ({ ...prev, [id]: true }));
+		setModelTestResultById((prev) => ({ ...prev, [id]: '' }));
+		if (config.kind === 'api') {
+			const result = await testModelConnection({
+				baseUrl: config.baseUrl,
+				apiKey: config.apiKey,
+				modelName: config.modelName,
+			});
+			setModelTestResultById((prev) => ({ ...prev, [id]: result.message }));
+		} else {
+			const result = await testWebGpuModel(config, requestTimeoutMs);
+			setModelTestResultById((prev) => ({ ...prev, [id]: result.message }));
+		}
+		setModelTestingById((prev) => ({ ...prev, [id]: false }));
+	};
+
 	const hasUnsavedRuntimeChanges = () => {
 		const g = (key: string, fb: string) => Number(localStorage.getItem(key) || fb) || Number(fb);
+		const savedMemory = localStorage.getItem('agent_memory_enabled') !== 'false';
 		return (
+			memoryEnabled !== savedMemory ||
 			maxSteps !== g('agent_max_steps', '30') ||
 			requestTimeoutMs !== g('agent_request_timeout_ms', '900000') ||
 			stepDelayMs !== g('agent_step_delay_ms', '1500') ||
@@ -514,6 +872,7 @@ const useAgentApp = () => {
 
 	const confirmDiscardSettings = () => {
 		const g = (key: string, fb: string) => Number(localStorage.getItem(key) || fb) || Number(fb);
+		setMemoryEnabled(localStorage.getItem('agent_memory_enabled') !== 'false');
 		setMaxSteps(g('agent_max_steps', '30'));
 		setRequestTimeoutMs(g('agent_request_timeout_ms', '900000'));
 		setStepDelayMs(g('agent_step_delay_ms', '1500'));
@@ -523,6 +882,473 @@ const useAgentApp = () => {
 		setMaxConsecutiveFailures(g('agent_max_consecutive_failures', '3'));
 		setShowDiscardDialog(false);
 		setShowSettings(false);
+	};
+
+	const toggleSettingsTransferCategory = (category: SettingsTransferCategory) => {
+		setSettingsTransferSelection((prev) => ({
+			...prev,
+			[category]: !prev[category],
+		}));
+	};
+
+	const exportSettingsJson = (mode: 'all' | 'selected') => {
+		const selected =
+			mode === 'all'
+				? settingsTransferDefaultSelection
+				: settingsTransferSelection;
+		const payload: Record<string, unknown> = {
+			schema: 'navai-settings-v1',
+			exportedAt: new Date().toISOString(),
+			data: {},
+		};
+		const data = payload.data as Record<string, unknown>;
+		if (selected.models) {
+			data.models = modelConfigs.map((m) =>
+				m.kind === 'api'
+					? {
+							kind: 'api' as const,
+							name: m.name,
+							baseUrl: m.baseUrl,
+							modelName: m.modelName,
+							supportsVision: Boolean(m.supportsVision),
+						}
+					: m.backend === 'onnx'
+						? {
+								kind: 'webgpu' as const,
+								backend: 'onnx' as const,
+								name: m.name,
+								supportsVision: Boolean(m.supportsVision),
+								contextWindowTokens: m.contextWindowTokens,
+								source:
+									m.source.type === 'huggingface'
+										? { type: 'huggingface' as const, repoId: m.source.repoId }
+										: {
+												type: 'upload' as const,
+												fileName: m.source.fileName,
+												byteSize: m.source.byteSize,
+											},
+							}
+						: {
+								kind: 'webgpu' as const,
+								backend: 'gguf' as const,
+								name: m.name,
+								supportsVision: Boolean(m.supportsVision),
+								contextWindowTokens: m.contextWindowTokens,
+								source:
+									m.source.type === 'huggingface'
+										? {
+												type: 'huggingface' as const,
+												repoId: m.source.repoId,
+												fileName: m.source.fileName,
+											}
+										: {
+												type: 'upload' as const,
+												fileName: m.source.fileName,
+												byteSize: m.source.byteSize,
+											},
+							}
+			);
+		}
+		if (selected.runtime) {
+			data.runtime = {
+				memoryEnabled: Boolean(memoryEnabled),
+				maxSteps: Math.max(1, Math.floor(maxSteps)),
+				requestTimeoutMs: Math.max(1000, Math.floor(requestTimeoutMs)),
+				stepDelayMs: Math.max(0, Math.floor(stepDelayMs)),
+				invalidRetryBaseMs: Math.max(0, Math.floor(invalidRetryBaseMs)),
+				invalidRetryIncrementMs: Math.max(0, Math.floor(invalidRetryIncrementMs)),
+				invalidRetryMaxMs: Math.max(0, Math.floor(invalidRetryMaxMs)),
+				maxConsecutiveFailures: Math.max(
+					1,
+					Math.floor(maxConsecutiveFailures)
+				),
+			};
+		}
+		if (selected.mcpServers) {
+			data.mcpServers = mcpServers.map((server) => ({
+				name: server.name,
+				url: server.url,
+				enabled: server.enabled !== false,
+				headers: server.headers || {},
+			}));
+		}
+		if (selected.userContexts) {
+			data.userContexts = userContexts.map((context) => ({
+				name: context.name,
+				content: context.content,
+			}));
+		}
+		if (selected.templates) {
+			data.templates = {
+				items: templates.map((template) => ({
+					name: template.name,
+					content: template.content,
+				})),
+			};
+		}
+		if (selected.skills) {
+			data.skills = userSkills.map((skill) => ({
+				name: skill.name,
+				content: skill.content,
+			}));
+		}
+
+		const text = JSON.stringify(payload, null, 2);
+		const blob = new Blob([text], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = `navai-settings-${Date.now()}.json`;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		URL.revokeObjectURL(url);
+		setSettingsTransferStatus('Settings exported.');
+	};
+
+	const loadSettingsTransferFile = async (fileList: FileList | null) => {
+		const file = fileList?.[0];
+		if (!file) return;
+		const text = await file.text();
+		setSettingsTransferJson(text);
+		setSettingsTransferStatus('Loaded JSON file. Ready to import.');
+	};
+
+	const importSettingsJson = () => {
+		const raw = settingsTransferJson.trim();
+		if (!raw) {
+			setSettingsTransferStatus('Paste or load a JSON payload first.');
+			return;
+		}
+		try {
+			const parsed = JSON.parse(raw);
+			const baseData =
+				parsed &&
+				typeof parsed === 'object' &&
+				parsed.data &&
+				typeof parsed.data === 'object'
+					? parsed.data
+					: parsed;
+			const data = baseData as Record<string, any>;
+			const selected = settingsTransferSelection;
+			const report: string[] = [];
+
+			if (selected.models && Array.isArray(data.models)) {
+				const genId = () =>
+					`model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+				const existing = new Set(modelConfigs.map((m) => JSON.stringify(m)));
+				let added = 0;
+				const next = [...modelConfigs];
+				for (const item of data.models) {
+					if (!item || typeof item !== 'object') continue;
+					const name = String((item as any).name || '').trim();
+					if (!name) continue;
+					if ((item as any).kind === 'webgpu') {
+						const w = item as any;
+						if (w.backend === 'onnx' && w.source?.type === 'huggingface') {
+							const hfRepo = String(w.source.repoId || '').trim();
+							if (!hfRepo) continue;
+							const entry: ModelConfig = {
+								kind: 'webgpu',
+								id: genId(),
+								name,
+								backend: 'onnx',
+								supportsVision: Boolean(w.supportsVision),
+								contextWindowTokens: normalizeWebGpuContextWindowTokens(
+									w.contextWindowTokens,
+									'onnx'
+								),
+								source: {
+									type: 'huggingface',
+									repoId: hfRepo,
+								},
+							};
+							const key = JSON.stringify(entry);
+							if (existing.has(key)) continue;
+							existing.add(key);
+							next.push(entry);
+							added += 1;
+						} else if (w.backend === 'gguf' && w.source?.type === 'huggingface') {
+							const repoId = String(w.source.repoId || '').trim();
+							const fileName = String(w.source.fileName || '').trim();
+							if (!repoId || !fileName) continue;
+							const entry: ModelConfig = {
+								kind: 'webgpu',
+								id: genId(),
+								name,
+								backend: 'gguf',
+								supportsVision: Boolean(w.supportsVision),
+								contextWindowTokens: normalizeWebGpuContextWindowTokens(
+									w.contextWindowTokens,
+									'gguf'
+								),
+								source: { type: 'huggingface', repoId, fileName },
+							};
+							const key = JSON.stringify(entry);
+							if (existing.has(key)) continue;
+							existing.add(key);
+							next.push(entry);
+							added += 1;
+						}
+						continue;
+					}
+					const baseUrl = String((item as any).baseUrl || '').trim();
+					const modelName = String((item as any).modelName || '').trim();
+					const supportsVision = Boolean((item as any).supportsVision);
+					if (!baseUrl || !modelName) continue;
+					const entry: ModelConfig = {
+						kind: 'api',
+						id: genId(),
+						name,
+						baseUrl,
+						apiKey: '',
+						modelName,
+						supportsVision,
+					};
+					const key = JSON.stringify(entry);
+					if (existing.has(key)) continue;
+					existing.add(key);
+					next.push(entry);
+					added += 1;
+				}
+				if (added > 0) {
+					setModelConfigs(next);
+					if (!activeModelId && next[0]?.id) setActiveModelId(next[0].id);
+				}
+				report.push(`Models +${added}`);
+			}
+
+			if (selected.runtime && data.runtime && typeof data.runtime === 'object') {
+				const runtime = data.runtime as Record<string, unknown>;
+				const toNumber = (value: unknown, fallback: number) => {
+					const next = Number(value);
+					return Number.isFinite(next) ? next : fallback;
+				};
+				setMemoryEnabled(
+					typeof runtime.memoryEnabled === 'boolean'
+						? runtime.memoryEnabled
+						: memoryEnabled
+				);
+				setMaxSteps(Math.max(1, Math.floor(toNumber(runtime.maxSteps, maxSteps))));
+				setRequestTimeoutMs(
+					Math.max(
+						1000,
+						Math.floor(toNumber(runtime.requestTimeoutMs, requestTimeoutMs))
+					)
+				);
+				setStepDelayMs(
+					Math.max(0, Math.floor(toNumber(runtime.stepDelayMs, stepDelayMs)))
+				);
+				setInvalidRetryBaseMs(
+					Math.max(
+						0,
+						Math.floor(toNumber(runtime.invalidRetryBaseMs, invalidRetryBaseMs))
+					)
+				);
+				setInvalidRetryIncrementMs(
+					Math.max(
+						0,
+						Math.floor(
+							toNumber(
+								runtime.invalidRetryIncrementMs,
+								invalidRetryIncrementMs
+							)
+						)
+					)
+				);
+				setInvalidRetryMaxMs(
+					Math.max(
+						0,
+						Math.floor(toNumber(runtime.invalidRetryMaxMs, invalidRetryMaxMs))
+					)
+				);
+				setMaxConsecutiveFailures(
+					Math.max(
+						1,
+						Math.floor(
+							toNumber(
+								runtime.maxConsecutiveFailures,
+								maxConsecutiveFailures
+							)
+						)
+					)
+				);
+				report.push('Runtime updated');
+			}
+
+			if (selected.mcpServers) {
+				const importedList = Array.isArray(data.mcpServers)
+					? data.mcpServers
+					: data.mcpServers && typeof data.mcpServers === 'object'
+					? Object.entries(data.mcpServers).map(([name, cfg]) => ({
+							name,
+							...(cfg as object),
+					  }))
+					: [];
+				if (importedList.length > 0) {
+					const normalizeHeaders = (headers: unknown) => {
+						const src =
+							headers && typeof headers === 'object'
+								? (headers as Record<string, unknown>)
+								: {};
+						return Object.keys(src)
+							.sort()
+							.reduce<Record<string, string>>((acc, key) => {
+								const value = src[key];
+								if (typeof value === 'string') acc[key] = value;
+								return acc;
+							}, {});
+					};
+					const fingerprint = (item: {
+						name: string;
+						url: string;
+						enabled: boolean;
+						headers: Record<string, string>;
+					}) =>
+						`${item.name}|${item.url}|${item.enabled ? '1' : '0'}|${JSON.stringify(
+							item.headers
+						)}`;
+					const existing = new Set(
+						mcpServers.map((server) =>
+							fingerprint({
+								name: server.name.trim(),
+								url: server.url.trim(),
+								enabled: server.enabled !== false,
+								headers: normalizeHeaders(server.headers),
+							})
+						)
+					);
+					let added = 0;
+					const next = [...mcpServers];
+					for (const item of importedList) {
+						const name = String((item as any)?.name || '').trim();
+						const url = String((item as any)?.url || '').trim();
+						if (!name || !url) continue;
+						const enabled = (item as any)?.enabled !== false;
+						const headers = normalizeHeaders((item as any)?.headers);
+						const key = fingerprint({ name, url, enabled, headers });
+						if (existing.has(key)) continue;
+						existing.add(key);
+						next.push({
+							id: `mcp_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+							name,
+							url,
+							enabled,
+							headers,
+						});
+						added += 1;
+					}
+					if (added > 0) setMcpServers(next);
+					report.push(`MCP +${added}`);
+				}
+			}
+
+			if (selected.userContexts && Array.isArray(data.userContexts)) {
+				const fingerprint = (item: { name: string; content: string }) =>
+					`${item.name.trim()}|${item.content.trim()}`;
+				const existing = new Set(
+					userContexts.map((context) =>
+						fingerprint({ name: context.name, content: context.content })
+					)
+				);
+				let added = 0;
+				const next = [...userContexts];
+				for (const item of data.userContexts) {
+					const name = String(item?.name || '').trim();
+					const content = String(item?.content || '').trim();
+					if (!name || !content) continue;
+					const key = fingerprint({ name, content });
+					if (existing.has(key)) continue;
+					existing.add(key);
+					next.push({
+						id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+						name,
+						content,
+					});
+					added += 1;
+				}
+				if (added > 0) setUserContexts(next);
+				report.push(`Contexts +${added}`);
+			}
+
+			if (selected.templates) {
+				const templateSection =
+					data.templates && typeof data.templates === 'object'
+						? data.templates
+						: null;
+				const templateItems = Array.isArray((templateSection as any)?.items)
+					? (templateSection as any).items
+					: Array.isArray(data.templates)
+					? data.templates
+					: [];
+				if (templateItems.length > 0) {
+					const fingerprint = (item: { name: string; content: string }) =>
+						`${item.name.trim()}|${item.content.trim()}`;
+					const existing = new Set(
+						templates.map((template) =>
+							fingerprint({ name: template.name, content: template.content })
+						)
+					);
+					let added = 0;
+					const next = [...templates];
+					for (const item of templateItems) {
+						const name = String(item?.name || '').trim();
+						const content = String(item?.content || '').trim();
+						if (!name || !content) continue;
+						const key = fingerprint({ name, content });
+						if (existing.has(key)) continue;
+						existing.add(key);
+						next.push({
+							id: `tpl_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+							name,
+							content,
+						});
+						added += 1;
+					}
+					if (added > 0) setTemplates(next);
+					report.push(`Templates +${added}`);
+				}
+			}
+
+			if (selected.skills && Array.isArray(data.skills)) {
+				const fingerprint = (item: { name: string; content: string }) =>
+					`${item.name.trim()}|${item.content.trim()}`;
+				const existing = new Set(
+					userSkills.map((skill) =>
+						fingerprint({ name: skill.name, content: skill.content })
+					)
+				);
+				let added = 0;
+				const next = [...userSkills];
+				for (const item of data.skills) {
+					const name = String(item?.name || '').trim();
+					const content = String(item?.content || '').trim();
+					if (!name || !content) continue;
+					const key = fingerprint({ name, content });
+					if (existing.has(key)) continue;
+					existing.add(key);
+					next.push({
+						id: `skill_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+						name,
+						content,
+						source: 'user',
+					});
+					added += 1;
+				}
+				if (added > 0) setUserSkills(next);
+				report.push(`Skills +${added}`);
+			}
+
+			setSettingsTransferStatus(
+				report.length > 0
+					? `Import complete. ${report.join(' | ')}`
+					: 'Import complete. No selected sections were changed.'
+			);
+		} catch (e: any) {
+			setSettingsTransferStatus(
+				`Import failed: ${e?.message || 'Invalid JSON format'}`
+			);
+		}
 	};
 
 	const clearSession = () => {
@@ -620,7 +1446,6 @@ const useAgentApp = () => {
 		} else {
 			const id = `tpl_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 			setTemplates((prev) => [...prev, { id, name, content }]);
-			setActiveTemplateId(id);
 		}
 		setEditingTemplateId(null);
 		setTemplateName('');
@@ -646,10 +1471,43 @@ const useAgentApp = () => {
 
 	const deleteTemplateById = (id: string) => {
 		setTemplates((prev) => prev.filter((t) => t.id !== id));
-		if (activeTemplateId === id) setActiveTemplateId('');
 		if (editingTemplateId === id) clearTemplateEditor();
 		setOpenTemplateMenuId(null);
 	};
+
+	const appendTemplateToTask = (id: string) => {
+		const template = templates.find((item) => item.id === id);
+		if (!template) return;
+		const content = template.content.trim();
+		if (!content) return;
+		setTask((prev) => {
+			const head = prev.trimEnd();
+			return head.length > 0 ? `${head}\n\n${content}` : content;
+		});
+		setShowTemplatePicker(false);
+		requestAnimationFrame(() => {
+			inputRef.current?.focus();
+		});
+	};
+
+	const appendRefToTask = (value: string) => {
+		const trimmed = value.trim();
+		if (!trimmed) return;
+		setTask((prev) => {
+			const head = prev.trimEnd();
+			return head.length > 0 ? `${head} ${trimmed} ` : `${trimmed} `;
+		});
+		requestAnimationFrame(() => {
+			inputRef.current?.focus();
+		});
+	};
+
+	const appendMcpRefToTask = (name: string) =>
+		appendRefToTask(`@mcp:${name}`);
+	const appendSkillRefToTask = (name: string) =>
+		appendRefToTask(`@skill:${name}`);
+	const appendAssetRefToTask = (name: string) =>
+		appendRefToTask(`@asset:${name}`);
 
 	const saveSkill = () => {
 		const content = skillContent.trim();
@@ -768,7 +1626,7 @@ const useAgentApp = () => {
 	};
 
 	const resolveRequestedSkillRefs = (text: string) => {
-		const tags = Array.from(text.matchAll(/@skill:([^\s,;]+)/gi))
+		const tags = Array.from(text.matchAll(/@skill:([^\s,;\[\]]+)/gi))
 			.map((match) => match[1]?.trim() || '')
 			.filter(Boolean);
 		const uniqueKeys = Array.from(new Set(tags.map((tag) => normalizeSkillKey(tag))));
@@ -955,12 +1813,18 @@ const useAgentApp = () => {
 	const runAgent = async (currentTask: string) => {
 		if (!currentTask.trim()) return;
 		setIsRunning(true);
-		const activeTemplate = templates.find((t) => t.id === activeTemplateId);
-		const baseTaskForAgentRaw = activeTemplate
-			? `${activeTemplate.content}\n\nUser Task:\n${currentTask}`
-			: currentTask;
+		const baseTaskForAgentRaw = currentTask;
 		const userContextBlock = buildSelectedUserContextBlock();
 		const baseTaskForAgent = `${baseTaskForAgentRaw}${userContextBlock}`;
+		const {
+			requestedServers: requestedMcpServers,
+			missing: missingMcp,
+			disabled: disabledMcp,
+		} = resolveRequestedMcpRefs(baseTaskForAgent, mcpServers);
+		const { requestedAssets, missing: missingAssets } = resolveRequestedAssetRefs(
+			baseTaskForAgent,
+			assets
+		);
 		const { requestedSkills, missing } = await loadRequestedSkills(baseTaskForAgent);
 		const requestedSkillsBlock =
 			requestedSkills.length > 0
@@ -968,11 +1832,17 @@ const useAgentApp = () => {
 						.map((skill) => `Skill: ${skill.name}\n${skill.content}`)
 						.join('\n\n')}`
 				: '';
-		const taskForAgent = `${baseTaskForAgent}${requestedSkillsBlock}`;
+		const requestedAssetsBlock =
+			requestedAssets.length > 0
+				? `\n\nREQUESTED ASSETS (focus these names):\n${requestedAssets
+						.map(
+							(asset) =>
+								`${asset.name} (${asset.type}, ${asset.size} bytes, ${asset.source || 'uploaded'})`
+						)
+						.join('\n')}`
+				: '';
+		const taskForAgent = `${baseTaskForAgent}${requestedSkillsBlock}${requestedAssetsBlock}`;
 		addMessage('user', currentTask);
-		if (activeTemplate) {
-			addMessage('system', `Template: ${activeTemplate.name}`);
-		}
 		const selectedContexts = userContexts.filter((context) =>
 			selectedUserContextIds.includes(context.id)
 		);
@@ -994,6 +1864,36 @@ const useAgentApp = () => {
 			addMessage(
 				'system',
 				`Requested skill(s) not found: ${missing.join(', ')}. Use @skill:SkillName with an existing skill name.`
+			);
+		}
+		if (requestedAssets.length > 0) {
+			addMessage(
+				'system',
+				`Assets in scope: ${requestedAssets.map((asset) => asset.name).join(', ')}`
+			);
+		}
+		if (missingAssets.length > 0) {
+			addMessage(
+				'system',
+				`Requested asset(s) not found: ${missingAssets.join(', ')}. Use @asset:AssetName with an existing asset name.`
+			);
+		}
+		if (requestedMcpServers.length > 0) {
+			addMessage(
+				'system',
+				`MCP in scope: ${requestedMcpServers.map((s) => s.name).join(', ')}`
+			);
+		}
+		if (missingMcp.length > 0) {
+			addMessage(
+				'system',
+				`Requested MCP server(s) not found: ${missingMcp.join(', ')}. Use @mcp:ServerName matching a configured MCP JSON key.`
+			);
+		}
+		if (disabledMcp.length > 0) {
+			addMessage(
+				'system',
+				`MCP server(s) disabled in settings: ${disabledMcp.join(', ')}. Enable them or remove @mcp: references.`
 			);
 		}
 		setTask('');
@@ -1016,6 +1916,7 @@ const useAgentApp = () => {
 			1,
 			Math.floor(maxConsecutiveFailures)
 		);
+		const runtimeMaxBatchActions = 10;
 
 		const modelCfg = activeModelConfig;
 		if (!modelCfg) {
@@ -1023,13 +1924,17 @@ const useAgentApp = () => {
 			setIsRunning(false);
 			return;
 		}
-		const { supportsVision } = modelCfg;
-		const brain = new AgentBrain(
-			modelCfg.apiKey,
-			modelCfg.baseUrl,
-			modelCfg.modelName,
-			runtimeRequestTimeoutMs
-		);
+		const supportsVision = modelCfg.supportsVision;
+		let brain: Awaited<ReturnType<typeof createStreamingBrain>>;
+		try {
+			brain = await createStreamingBrain(modelCfg, {
+				requestTimeoutMs: runtimeRequestTimeoutMs,
+			});
+		} catch (e: any) {
+			addMessage('system', `Could not load model: ${formatModelLoadError(e)}`);
+			setIsRunning(false);
+			return;
+		}
 		const fileContext = buildFileContext();
 		const imageAttachments = buildImageAttachments();
 		const assetCatalog = buildAssetCatalog();
@@ -1048,8 +1953,9 @@ const useAgentApp = () => {
 		let invalidResponseCount = 0;
 		const tabSession = createTabSessionManager(sessionId);
 		let shouldRestoreMainTab = false;
-		let taskCompleted = false;
-		const mcpTools = await listMcpTools(mcpServers.filter((server) => server.enabled));
+		const enabledMcpServers = mcpServers.filter((server) => server.enabled);
+		const allowedMcpServerIds = new Set(enabledMcpServers.map((s) => s.id));
+		const mcpTools = await listMcpTools(enabledMcpServers);
 		const mcpCatalog = buildMcpToolCatalogText(mcpTools);
 		activeRef.current = true;
 		(window as any).stopAgent = () => {
@@ -1057,10 +1963,33 @@ const useAgentApp = () => {
 			releasePendingContinue();
 			setIsRunning(false);
 		};
+		const waitForManualFix = async (reason: string, hints: string[] = []) => {
+			const hintsText =
+				hints.length > 0
+					? `\nSuggested checks:\n${hints.map((hint) => `- ${hint}`).join('\n')}`
+					: '';
+			setWaitingForUserAction(true);
+			addMessage(
+				'system',
+				`Agent paused: ${reason}${hintsText}\nClick Continue when done.`,
+				'continue_agent'
+			);
+			await new Promise<void>((resolve) => {
+				continueResolverRef.current = resolve;
+			});
+			continueResolverRef.current = null;
+			setWaitingForUserAction(false);
+			if (!activeRef.current) return false;
+			addMessage('system', 'User continued the task.');
+			return true;
+		};
 
 		try {
-			const initialTab = await getCurrentTab();
+			const { tab: initialTab, openedNewTab } = await resolveAgentTab();
 			if (!initialTab?.id) throw new Error('No active tab');
+			if (openedNewTab) {
+				addMessage('system', 'Opened a new browser tab to start the task.');
+			}
 			await tabSession.beginRun(initialTab.id);
 			shouldRestoreMainTab = true;
 
@@ -1070,16 +1999,33 @@ const useAgentApp = () => {
 
 				let state: any = null;
 				try {
-					state = await chrome.tabs.sendMessage(tabId, {
-						type: 'GET_CONTENT',
-					});
-				} catch (e) {
-					throw new Error(
-						'Could not connect to page. Try refreshing the page.'
+					state = await getTabStateFromFrames(tabId);
+				} catch {
+					const resumed = await waitForManualFix(
+						'Could not connect to the current page content.',
+						[
+							'Refresh the page once.',
+							'Make sure you are on a normal web page (http/https).',
+							'If login/captcha is blocking progress, complete it manually.',
+						]
 					);
+					if (!resumed) break;
+					stepCount++;
+					continue;
 				}
 
-				if (!state) throw new Error('Could not read page content.');
+				if (!state) {
+					const resumed = await waitForManualFix(
+						'Page content could not be read from the current tab.',
+						[
+							'Scroll or interact once on the page to make it active.',
+							'Refresh and then click Continue.',
+						]
+					);
+					if (!resumed) break;
+					stepCount++;
+					continue;
+				}
 
 				if (!activeRef.current) break;
 
@@ -1088,11 +2034,13 @@ const useAgentApp = () => {
 				pageHistory.push(pageHash);
 				if (pageHistory.length > 6) pageHistory.shift();
 
-				// --- Call Local Brain ---
 				const screenshot = supportsVision ? await captureVisibleTab() : null;
 				const elementMap = buildElementMapSummary(state.elements || []);
-				const stream = brain.processStep(
-					{
+
+				let fullText = '';
+				let contextOverflow = false;
+				try {
+					const stream = brain.processStep({
 						task: taskForAgent,
 						url: state.url,
 						pageContent: state.content,
@@ -1106,32 +2054,66 @@ const useAgentApp = () => {
 						screenshotDataUrl: screenshot || undefined,
 						viewport: state.viewport,
 						attachedImages: supportsVision ? imageAttachments : [],
-					}
-				);
-
-				let fullText = '';
-				addMessage('agent', '');
-
-				for await (const chunk of stream) {
-					if (!activeRef.current) break;
-					fullText += chunk;
-					setMessages((prev) => {
-						const last = prev[prev.length - 1];
-						if (last.role === 'agent') {
-							return [...prev.slice(0, -1), { ...last, content: fullText }];
-						}
-						return prev;
 					});
+
+					addMessage('agent', '');
+					for await (const chunk of stream) {
+						if (!activeRef.current) break;
+						fullText += chunk;
+						setMessages((prev) => {
+							const last = prev[prev.length - 1];
+							if (last.role === 'agent') {
+								return [...prev.slice(0, -1), { ...last, content: fullText }];
+							}
+							return prev;
+						});
+					}
+				} catch (ctxErr: any) {
+					contextOverflow = true;
+					const errMsg = (ctxErr.message || '').toLowerCase();
+					const isCtx = errMsg.includes('context') || errMsg.includes('token') || errMsg.includes('maximum');
+					if (!isCtx) throw ctxErr;
+				}
+
+				if (contextOverflow && memoryEnabled && actionHistory.length > 2) {
+					addMessage('system', 'please wait Dreaming...');
+					const compressed = await summarizeSession({
+						originalTask: taskForAgent,
+						actionHistory,
+						modelConfig: modelCfg,
+						requestTimeoutMs: runtimeRequestTimeoutMs,
+					});
+					actionHistory.length = 0;
+					compressed.forEach((line) => actionHistory.push(line));
+					addMessage('system', 'Memory compressed. Continuing task...');
+					continue;
+				}
+				if (contextOverflow) {
+					addMessage('system', 'Context window exceeded. Enable Memory in settings to auto-compress.');
+					break;
 				}
 
 				if (!activeRef.current) break;
 
-				// Parsing Logic (tolerant of local model JSON quirks)
-				const decision = parseAgentDecision(fullText);
+				const parsedDecisions = parseAgentDecisions(fullText);
 
-				if (!decision || !decision.action) {
+				if (parsedDecisions.length === 0) {
 					invalidResponseCount += 1;
 					addMessage('system', `Raw response:\n${fullText}`);
+					if (invalidResponseCount >= runtimeMaxConsecutiveFailures) {
+						const resumed = await waitForManualFix(
+							`Model output could not be parsed ${invalidResponseCount} times in a row.`,
+							[
+								'If the page changed significantly, refresh the page.',
+								'If needed, simplify or clarify your task instruction.',
+								'You can also switch to another model in settings.',
+							]
+						);
+						if (!resumed) break;
+						invalidResponseCount = 0;
+						stepCount++;
+						continue;
+					}
 					const retryDelay = Math.min(
 						runtimeInvalidRetryMaxMs,
 						runtimeInvalidRetryBaseMs +
@@ -1144,23 +2126,27 @@ const useAgentApp = () => {
 					await new Promise((r) => setTimeout(r, retryDelay));
 					continue;
 				}
-				invalidResponseCount = 0;
-				const normalized = normalizeDecision(decision);
 
 				const allowedActions = [
 					'CLICK',
 					'CLICK_INDEX',
 					'CLICK_ID',
 					'CLICK_COORDS',
+					'DOUBLE_CLICK',
 					'TYPE',
 					'TYPE_ID',
 					'TYPE_COORDS',
+					'CLEAR',
+					'FOCUS',
 					'NAVIGATE',
 					'SCROLL',
 					'WAIT',
 					'HOVER',
 					'HOVER_ID',
 					'HOVER_COORDS',
+					'DRAG',
+					'DRAG_ID',
+					'DRAG_COORDS',
 					'SELECT',
 					'SELECT_ID',
 					'UPLOAD_ASSET',
@@ -1174,16 +2160,46 @@ const useAgentApp = () => {
 					'DONE',
 					'ASK',
 				];
-				if (!allowedActions.includes(normalized.action)) {
-					throw new Error(`Unsupported action: ${normalized.action}`);
+				const normalizedBatch = parsedDecisions.map((d) =>
+					normalizeDecision(d)
+				);
+				const validBatch: typeof normalizedBatch = [];
+				const invalidReasons: string[] = [];
+				for (const normalized of normalizedBatch) {
+					if (!allowedActions.includes(normalized.action)) {
+						invalidReasons.push(`Unsupported action: ${normalized.action}`);
+						continue;
+					}
+					const actionValidationError = validateActionPayload(normalized);
+					if (actionValidationError) {
+						invalidReasons.push(
+							`${normalized.action}: ${actionValidationError}`
+						);
+						continue;
+					}
+					validBatch.push(normalized);
 				}
-				const actionValidationError = validateActionPayload(normalized);
-				if (actionValidationError) {
+
+				if (validBatch.length === 0) {
 					invalidResponseCount += 1;
 					addMessage(
 						'system',
-						`Invalid action payload: ${actionValidationError}. Retrying...`
+						`Invalid action payload(s): ${invalidReasons.join(' | ')}`
 					);
+					if (invalidResponseCount >= runtimeMaxConsecutiveFailures) {
+						const resumed = await waitForManualFix(
+							`Model returned invalid action payload ${invalidResponseCount} times.`,
+							[
+								'Inspect the latest model response in chat.',
+								'Refresh the page if the UI changed.',
+								'Then click Continue to retry from current page state.',
+							]
+						);
+						if (!resumed) break;
+						invalidResponseCount = 0;
+						stepCount++;
+						continue;
+					}
 					const retryDelay = Math.min(
 						runtimeInvalidRetryMaxMs,
 						runtimeInvalidRetryBaseMs +
@@ -1194,163 +2210,225 @@ const useAgentApp = () => {
 				}
 				invalidResponseCount = 0;
 
-				const actionKey = `${normalized.action}:${JSON.stringify(
-					normalized.params || {}
-				)}`;
-				recentActions.push(actionKey);
-				if (recentActions.length > 4) recentActions.shift();
-				const isRepeating =
-					recentActions.length === 4 &&
-					recentActions.every((a) => a === actionKey);
-				const isStuck =
-					pageHistory.length >= 3 &&
-					pageHistory.slice(-3).every((h) => h === pageHash);
-				if (isRepeating && isStuck) {
-					activeRef.current = false;
+				if (invalidReasons.length > 0) {
 					addMessage(
 						'system',
-						'Agent seems stuck. Please guide the next step.'
+						`Skipped invalid proposed action(s): ${invalidReasons.join(' | ')}`
 					);
-					break;
 				}
 
-				actionHistory.push(
-					`Action: ${normalized.action} Params: ${JSON.stringify(
-						normalized.params
-					)}`
-				);
-
-				if (normalized.action === 'DONE') {
-					taskCompleted = true;
-					activeRef.current = false;
-					addMessage('system', 'Task Completed.');
-					break;
-				}
-
-				if (normalized.action === 'ASK') {
-					activeRef.current = false;
-					addMessage('system', `Question: ${normalized.params.question}`);
-					break;
-				}
-
-				if (normalized.action === 'WAIT_FOR_USER_ACTION') {
-					const waitReason =
-						typeof normalized.params.reason === 'string' &&
-						normalized.params.reason.trim().length > 0
-							? normalized.params.reason.trim()
-							: 'Complete the needed manual step on the page.';
-					setWaitingForUserAction(true);
+				const executableBatch = validBatch.slice(0, runtimeMaxBatchActions);
+				if (validBatch.length > executableBatch.length) {
 					addMessage(
 						'system',
-						`Agent is waiting for your manual action on the page.\nReason: ${waitReason}\nClick Continue when done.`,
-						'continue_agent'
+						`Model proposed ${validBatch.length} actions. Executing first ${executableBatch.length} for safety, then re-planning.`
 					);
-					await new Promise<void>((resolve) => {
-						continueResolverRef.current = resolve;
-					});
-					continueResolverRef.current = null;
-					setWaitingForUserAction(false);
-					if (!activeRef.current) break;
-					addMessage('system', 'User continued the task.');
-					stepCount++;
-					continue;
+				} else if (executableBatch.length > 1) {
+					addMessage(
+						'system',
+						`Model proposed ${executableBatch.length} actions. Executing sequentially with ${runtimeStepDelayMs}ms delay between steps.`
+					);
 				}
 
-				let actionResult = '';
-				if (normalized.action === 'OPEN_TAB') {
-					actionResult = await tabSession.openTab(
-						String(normalized.params.url),
-						Boolean(normalized.params.background)
+				for (let batchIndex = 0; batchIndex < executableBatch.length; batchIndex += 1) {
+					if (!activeRef.current || stepCount >= runtimeMaxSteps) break;
+					const normalized = executableBatch[batchIndex];
+
+					const actionKey = `${normalized.action}:${JSON.stringify(
+						normalized.params || {}
+					)}`;
+					recentActions.push(actionKey);
+					if (recentActions.length > 4) recentActions.shift();
+					const isRepeating =
+						recentActions.length === 4 &&
+						recentActions.every((a) => a === actionKey);
+					const isStuck =
+						pageHistory.length >= 3 &&
+						pageHistory.slice(-3).every((h) => h === pageHash);
+					if (isRepeating && isStuck) {
+						const resumed = await waitForManualFix(
+							'Agent seems stuck on the same page state and repeated the same action pattern.',
+							[
+								'Manually do the blocked step (captcha, popup, consent, or login).',
+								'If needed, navigate to the next expected page yourself.',
+								'Then click Continue so the agent resumes from here.',
+							]
+						);
+						if (!resumed) break;
+						recentActions.length = 0;
+						pageHistory.length = 0;
+						failureCount = 0;
+						invalidResponseCount = 0;
+						stepCount++;
+						continue;
+					}
+
+					actionHistory.push(
+						`Action: ${normalized.action} Params: ${JSON.stringify(
+							normalized.params
+						)}`
 					);
-				} else if (normalized.action === 'SWITCH_TAB') {
-					actionResult = await tabSession.switchTab({
-						tabId:
+
+					if (normalized.action === 'DONE') {
+						activeRef.current = false;
+						addMessage('system', 'Task Completed.');
+						break;
+					}
+
+					if (normalized.action === 'ASK') {
+						activeRef.current = false;
+						addMessage('system', `Question: ${normalized.params.question}`);
+						break;
+					}
+
+					if (normalized.action === 'WAIT_FOR_USER_ACTION') {
+						const waitReason =
+							typeof normalized.params.reason === 'string' &&
+							normalized.params.reason.trim().length > 0
+								? normalized.params.reason.trim()
+								: 'Complete the needed manual step on the page.';
+						const resumed = await waitForManualFix(waitReason);
+						if (!resumed) break;
+						stepCount++;
+						continue;
+					}
+
+					let actionResult = '';
+					if (normalized.action === 'OPEN_TAB') {
+						actionResult = await tabSession.openTab(
+							String(normalized.params.url),
+							Boolean(normalized.params.background)
+						);
+					} else if (normalized.action === 'SWITCH_TAB') {
+						actionResult = await tabSession.switchTab({
+							tabId:
+								typeof normalized.params.tabId === 'number'
+									? normalized.params.tabId
+									: undefined,
+							index:
+								typeof normalized.params.index === 'number'
+									? normalized.params.index
+									: undefined,
+							urlContains:
+								typeof normalized.params.urlContains === 'string'
+									? normalized.params.urlContains
+									: undefined,
+						});
+					} else if (normalized.action === 'CLOSE_TAB') {
+						actionResult = await tabSession.closeTab(
 							typeof normalized.params.tabId === 'number'
 								? normalized.params.tabId
-								: undefined,
-						index:
-							typeof normalized.params.index === 'number'
-								? normalized.params.index
-								: undefined,
-						urlContains:
-							typeof normalized.params.urlContains === 'string'
-								? normalized.params.urlContains
-								: undefined,
-					});
-				} else if (normalized.action === 'CLOSE_TAB') {
-					actionResult = await tabSession.closeTab(
-						typeof normalized.params.tabId === 'number'
-							? normalized.params.tabId
-							: undefined
-					);
-				} else if (normalized.action === 'CLOSE_EXTRA_TABS') {
-					actionResult =
-						'Deferred CLOSE_EXTRA_TABS until task completion. Continue with remaining steps.';
-				} else if (normalized.action === 'MCP_CALL') {
-					const enrichment = enrichMcpArgumentsWithAssets(
-						normalized.params.arguments &&
-							typeof normalized.params.arguments === 'object'
-							? (normalized.params.arguments as Record<string, unknown>)
-							: {},
-						assets,
-						setAssets
-					);
-					if (!enrichment.ok) {
-						actionResult = `Failed MCP_CALL preflight: ${enrichment.error}`;
-					} else {
-						if (enrichment.attachmentSummary) {
-							addMessage(
-								'system',
-								`MCP attachment preflight: ${enrichment.attachmentSummary}`
+								: undefined
+						);
+					} else if (normalized.action === 'CLOSE_EXTRA_TABS') {
+						actionResult =
+							'Deferred CLOSE_EXTRA_TABS until task completion. Continue with remaining steps.';
+					} else if (normalized.action === 'MCP_CALL') {
+						const serverId = String(normalized.params.serverId || '');
+						if (!allowedMcpServerIds.has(serverId)) {
+							actionResult =
+								'MCP_CALL refused: server not enabled in settings.';
+						} else {
+							const enrichment = enrichMcpArgumentsWithAssets(
+								normalized.params.arguments &&
+									typeof normalized.params.arguments === 'object'
+									? (normalized.params.arguments as Record<string, unknown>)
+									: {},
+								assets,
+								setAssets
 							);
+							if (!enrichment.ok) {
+								actionResult = `Failed MCP_CALL preflight: ${enrichment.error}`;
+							} else {
+								if (enrichment.attachmentSummary) {
+									addMessage(
+										'system',
+										`MCP attachment preflight: ${enrichment.attachmentSummary}`
+									);
+								}
+								actionResult = await callMcpTool(
+									mcpServers,
+									serverId,
+									String(normalized.params.tool || ''),
+									enrichment.args
+								);
+							}
 						}
-					actionResult = await callMcpTool(
-						mcpServers,
-						String(normalized.params.serverId || ''),
-						String(normalized.params.tool || ''),
-						enrichment.args
-					);
+					} else {
+						const targetTabId = await tabSession.getTargetTabId();
+						if (!targetTabId) throw new Error('No target tab for action');
+						const result: any = await executeTabActionInFrames(
+							targetTabId,
+							normalized,
+							assets,
+							state?.elements || []
+						);
+						actionResult = result?.result || 'No result';
+						const isClickLikeAction =
+							normalized.action === 'CLICK' ||
+							normalized.action === 'CLICK_ID' ||
+							normalized.action === 'CLICK_INDEX';
+						const clickFailed =
+							typeof actionResult === 'string' &&
+							/(Failed|Error)/i.test(actionResult);
+						if (isClickLikeAction && clickFailed) {
+							const fallbackUrl = resolveClickFallbackUrl(
+								state?.elements || [],
+								normalized as { action: string; params: Record<string, unknown> }
+							);
+							if (fallbackUrl) {
+								const tabOpenResult = await tabSession.openTab(fallbackUrl, false);
+								if (!/(Failed|Error|Refused)/i.test(tabOpenResult)) {
+									actionResult = `Opened link URL in a new tab via click fallback: ${fallbackUrl}`;
+								}
+							}
+						}
 					}
-				} else {
-					const targetTabId = await tabSession.getTargetTabId();
-					if (!targetTabId) throw new Error('No target tab for action');
-					const result: any = await chrome.tabs.sendMessage(targetTabId, {
-						type: 'EXECUTE_ACTION',
-						action: normalized,
-						assets,
-					});
-					actionResult = result?.result || 'No result';
-				}
 
-				addMessage('system', `Result: ${actionResult}`);
-				actionHistory.push(`Result: ${actionResult}`);
-				if (
-					typeof actionResult === 'string' &&
-					/(Failed|Error|Refused)/i.test(actionResult)
-				) {
-					failureCount += 1;
-				} else {
-					failureCount = 0;
-				}
-				if (failureCount >= runtimeMaxConsecutiveFailures) {
-					activeRef.current = false;
-					addMessage(
-						'system',
-						`Too many failures (${runtimeMaxConsecutiveFailures}). Please adjust the task or provide guidance.`
-					);
-					break;
-				}
+					addMessage('system', `Result: ${actionResult}`);
+					actionHistory.push(`Result: ${actionResult}`);
+					if (
+						typeof actionResult === 'string' &&
+						/(Failed|Error|Refused)/i.test(actionResult)
+					) {
+						failureCount += 1;
+					} else {
+						failureCount = 0;
+					}
+					if (failureCount >= runtimeMaxConsecutiveFailures) {
+						const resumed = await waitForManualFix(
+							`Too many action failures (${runtimeMaxConsecutiveFailures}) in a row.`,
+							[
+								'Inspect page for blockers (modals, popups, captcha, auth prompts).',
+								'Manually complete the blocker and keep the target page open.',
+								'Click Continue to resume from current state.',
+							]
+						);
+						if (!resumed) break;
+						failureCount = 0;
+						invalidResponseCount = 0;
+						recentActions.length = 0;
+						stepCount++;
+						continue;
+					}
 
-				stepCount++;
-				await new Promise((r) => setTimeout(r, runtimeStepDelayMs));
+					const isNavAction =
+						normalized.action === 'NAVIGATE' ||
+						normalized.action === 'OPEN_TAB';
+					const navDelay = isNavAction
+						? Math.max(2500, runtimeStepDelayMs)
+						: runtimeStepDelayMs;
+					stepCount++;
+					await new Promise((r) => setTimeout(r, navDelay));
+				}
 			}
 		} catch (e: any) {
 			addMessage('system', `Error: ${e.message}`);
 		} finally {
 			releasePendingContinue();
-			if (shouldRestoreMainTab && taskCompleted) {
+			if (shouldRestoreMainTab) {
 				try {
-					await tabSession.closeExtraTabs();
+					await tabSession.ensureCurrentTabActive();
 				} catch {
 					// Ignore cleanup failures.
 				}
@@ -1362,12 +2440,13 @@ const useAgentApp = () => {
 	const runAsk = async (currentTask: string) => {
 		if (!currentTask.trim()) return;
 		setIsRunning(true);
-		const activeTemplate = templates.find((t) => t.id === activeTemplateId);
-		const baseTaskForAgentRaw = activeTemplate
-			? `${activeTemplate.content}\n\nUser Question:\n${currentTask}`
-			: currentTask;
+		const baseTaskForAgentRaw = currentTask;
 		const userContextBlock = buildSelectedUserContextBlock();
 		const baseTaskForAgent = `${baseTaskForAgentRaw}${userContextBlock}`;
+		const { requestedAssets, missing: missingAssets } = resolveRequestedAssetRefs(
+			baseTaskForAgent,
+			assets
+		);
 		const { requestedSkills, missing } = await loadRequestedSkills(baseTaskForAgent);
 		const requestedSkillsBlock =
 			requestedSkills.length > 0
@@ -1375,11 +2454,17 @@ const useAgentApp = () => {
 						.map((skill) => `Skill: ${skill.name}\n${skill.content}`)
 						.join('\n\n')}`
 				: '';
-		const taskForAgent = `${baseTaskForAgent}${requestedSkillsBlock}`;
+		const requestedAssetsBlock =
+			requestedAssets.length > 0
+				? `\n\nREQUESTED ASSETS (focus these names):\n${requestedAssets
+						.map(
+							(asset) =>
+								`${asset.name} (${asset.type}, ${asset.size} bytes, ${asset.source || 'uploaded'})`
+						)
+						.join('\n')}`
+				: '';
+		const taskForAgent = `${baseTaskForAgent}${requestedSkillsBlock}${requestedAssetsBlock}`;
 		addMessage('user', currentTask);
-		if (activeTemplate) {
-			addMessage('system', `Template: ${activeTemplate.name}`);
-		}
 		const selectedContexts = userContexts.filter((context) =>
 			selectedUserContextIds.includes(context.id)
 		);
@@ -1403,6 +2488,18 @@ const useAgentApp = () => {
 				`Requested skill(s) not found: ${missing.join(', ')}. Use @skill:SkillName with an existing skill name.`
 			);
 		}
+		if (requestedAssets.length > 0) {
+			addMessage(
+				'system',
+				`Assets in scope: ${requestedAssets.map((asset) => asset.name).join(', ')}`
+			);
+		}
+		if (missingAssets.length > 0) {
+			addMessage(
+				'system',
+				`Requested asset(s) not found: ${missingAssets.join(', ')}. Use @asset:AssetName with an existing asset name.`
+			);
+		}
 		setTask('');
 		const runtimeRequestTimeoutMs = Math.max(1000, Math.floor(requestTimeoutMs));
 
@@ -1412,13 +2509,17 @@ const useAgentApp = () => {
 			setIsRunning(false);
 			return;
 		}
-		const { supportsVision } = modelCfg;
-		const brain = new AgentBrain(
-			modelCfg.apiKey,
-			modelCfg.baseUrl,
-			modelCfg.modelName,
-			runtimeRequestTimeoutMs
-		);
+		const supportsVision = modelCfg.supportsVision;
+		let brain: Awaited<ReturnType<typeof createStreamingBrain>>;
+		try {
+			brain = await createStreamingBrain(modelCfg, {
+				requestTimeoutMs: runtimeRequestTimeoutMs,
+			});
+		} catch (e: any) {
+			addMessage('system', `Could not load model: ${formatModelLoadError(e)}`);
+			setIsRunning(false);
+			return;
+		}
 		const fileContext = buildFileContext();
 		const imageAttachments = buildImageAttachments();
 		if (!supportsVision && imageAttachments.length > 0) {
@@ -1435,14 +2536,15 @@ const useAgentApp = () => {
 		};
 
 		try {
-			const tab = await getCurrentTab();
+			const { tab, openedNewTab } = await resolveAgentTab();
 			if (!tab?.id) throw new Error('No active tab');
+			if (openedNewTab) {
+				addMessage('system', 'Opened a new browser tab to answer your question.');
+			}
 
 			let state: any = null;
 			try {
-				state = await chrome.tabs.sendMessage(tab.id, {
-					type: 'GET_CONTENT',
-				});
+				state = await getTabStateFromFrames(tab.id);
 			} catch {
 				throw new Error('Could not connect to page. Try refreshing the page.');
 			}
@@ -1551,9 +2653,6 @@ const useAgentApp = () => {
 			)
 		);
 
-	const activeTemplateDisplay = templates.find(
-		(t) => t.id === activeTemplateId
-	);
 	const inputClass = isDark
 		? 'w-full bg-gpt-surface border border-gpt-border rounded-xl px-3 py-2.5 text-[13px] text-gpt-text placeholder:text-gpt-muted focus:outline-none focus:ring-2 focus:ring-gpt-accent/20'
 		: 'w-full bg-gpt-surface border border-gpt-border rounded-xl px-3 py-2.5 text-[13px] text-gpt-text placeholder:text-gpt-muted focus:outline-none focus:ring-2 focus:ring-gpt-accent/20';
@@ -1584,6 +2683,10 @@ const useAgentApp = () => {
 		setShowSettings,
 		interactionMode,
 		setInteractionMode,
+		memoryEnabled,
+		setMemoryEnabled,
+		isMemorySettingsOpen,
+		setIsMemorySettingsOpen,
 		modelConfigs,
 		setModelConfigs,
 		activeModelId,
@@ -1634,10 +2737,31 @@ const useAgentApp = () => {
 		setMcpTestingById,
 		mcpTestResultById,
 		setMcpTestResultById,
+		modelTestingById,
+		modelTestResultById,
+		modelFormTab,
+		setModelFormTab,
+		modelFormWebGpuBackend,
+		setModelFormWebGpuBackend,
+		modelFormWebGpuSource,
+		setModelFormWebGpuSource,
+		modelFormWebGpuHfOnnx,
+		setModelFormWebGpuHfOnnx,
+		modelFormWebGpuHfGgufRepo,
+		setModelFormWebGpuHfGgufRepo,
+		modelFormWebGpuHfGgufFile,
+		setModelFormWebGpuHfGgufFile,
+		modelFormWebGpuGgufUrl,
+		setModelFormWebGpuGgufUrl,
+		modelFormGgufConfigError,
+		setModelFormGgufConfigError,
+		modelFormWebGpuUpload,
+		setModelFormWebGpuUpload,
+		modelFormWebGpuContextWindowTokens,
+		setModelFormWebGpuContextWindowTokens,
+		webGpuSaving,
 		templates,
 		setTemplates,
-		activeTemplateId,
-		setActiveTemplateId,
 		editingTemplateId,
 		setEditingTemplateId,
 		templateName,
@@ -1654,6 +2778,12 @@ const useAgentApp = () => {
 		setSessionId,
 		showTemplatePicker,
 		setShowTemplatePicker,
+		showMcpPicker,
+		setShowMcpPicker,
+		showSkillsPicker,
+		setShowSkillsPicker,
+		showAssetsPicker,
+		setShowAssetsPicker,
 		showHistoryPanel,
 		setShowHistoryPanel,
 		isModelsSettingsOpen,
@@ -1672,12 +2802,22 @@ const useAgentApp = () => {
 		setIsUserContextSettingsOpen,
 		isSkillsSettingsOpen,
 		setIsSkillsSettingsOpen,
+		isSettingsTransferOpen,
+		setIsSettingsTransferOpen,
+		settingsTransferSelection,
+		setSettingsTransferSelection,
+		settingsTransferJson,
+		setSettingsTransferJson,
+		settingsTransferStatus,
+		setSettingsTransferStatus,
 		uiZoom,
 		setUiZoom,
 		isDark,
 		setIsDark,
 		showTemplateForm,
 		setShowTemplateForm,
+		openModelMenuId,
+		setOpenModelMenuId,
 		openTemplateMenuId,
 		setOpenTemplateMenuId,
 		openMcpMenuId,
@@ -1718,6 +2858,8 @@ const useAgentApp = () => {
 		setUserContextContent,
 		openUserContextMenuId,
 		setOpenUserContextMenuId,
+		autoScrollEnabled,
+		setAutoScrollEnabled,
 		waitingForUserAction,
 		setWaitingForUserAction,
 		saveSettings,
@@ -1726,9 +2868,14 @@ const useAgentApp = () => {
 		startEditModelConfig,
 		clearModelForm,
 		deleteModelConfigById,
+		testModelConfigById,
 		attemptLeaveSettings,
 		confirmDiscardSettings,
 		hasUnsavedRuntimeChanges,
+		toggleSettingsTransferCategory,
+		exportSettingsJson,
+		loadSettingsTransferFile,
+		importSettingsJson,
 		clearSession,
 		addMcpServerFromJson,
 		toggleMcpServer,
@@ -1770,12 +2917,19 @@ const useAgentApp = () => {
 		continueAfterUserAction,
 		computeAssetSuggestions,
 		applyAssetMention,
+		appendTemplateToTask,
+		appendMcpRefToTask,
+		appendSkillRefToTask,
+		appendAssetRefToTask,
 		zoomOut,
 		zoomIn,
 		bottomRef,
+		messagesContainerRef,
 		activeRef,
 		inputRef,
 		continueResolverRef,
+		handleMessagesScroll,
+		toggleAutoScroll,
 		inputClass,
 		panelClass,
 		labelClass,
@@ -1786,7 +2940,6 @@ const useAgentApp = () => {
 		uploadedAssets,
 		agentCreatedAssets,
 		skills,
-		activeTemplateDisplay,
 	};
 };
 

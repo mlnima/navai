@@ -2,7 +2,9 @@ import ChevronIcon from '../icons/ChevronIcon';
 import MoreVerticalIcon from '../icons/MoreVerticalIcon';
 import decodeDataUrlText from '../file/decodeDataUrlText';
 import { toMcpServersJsonText } from '../../agent/mcpConfig';
+import getModelDisplayName from '../getModelDisplayName';
 import type { AgentAppModel } from './useAgentApp';
+import ModelSettingsForm from './ModelSettingsForm';
 
 const AgentSettingsScreen = (p: AgentAppModel) => {
 	const {
@@ -11,6 +13,10 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		showDiscardDialog,
 		setShowDiscardDialog,
 		confirmDiscardSettings,
+		memoryEnabled,
+		setMemoryEnabled,
+		isMemorySettingsOpen,
+		setIsMemorySettingsOpen,
 		modelConfigs,
 		activeModelId,
 		setActiveModelId,
@@ -19,6 +25,8 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		showModelForm,
 		setShowModelForm,
 		editingModelId,
+		openModelMenuId,
+		setOpenModelMenuId,
 		modelFormName,
 		setModelFormName,
 		modelFormBaseUrl,
@@ -32,11 +40,35 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		modelFormUseManual,
 		setModelFormUseManual,
 		modelFormAvailableModels,
+		modelFormTab,
+		setModelFormTab,
+		modelFormWebGpuBackend,
+		setModelFormWebGpuBackend,
+		modelFormWebGpuSource,
+		setModelFormWebGpuSource,
+		modelFormWebGpuHfOnnx,
+		setModelFormWebGpuHfOnnx,
+		modelFormWebGpuHfGgufRepo,
+		setModelFormWebGpuHfGgufRepo,
+		modelFormWebGpuHfGgufFile,
+		setModelFormWebGpuHfGgufFile,
+		modelFormWebGpuGgufUrl,
+		setModelFormWebGpuGgufUrl,
+		modelFormGgufConfigError,
+		setModelFormGgufConfigError,
+		modelFormWebGpuUpload,
+		setModelFormWebGpuUpload,
+		modelFormWebGpuContextWindowTokens,
+		setModelFormWebGpuContextWindowTokens,
+		webGpuSaving,
 		saveModelConfig,
 		startEditModelConfig,
 		clearModelForm,
 		deleteModelConfigById,
+		testModelConfigById,
 		fetchModelsForForm,
+		modelTestingById,
+		modelTestResultById,
 		isRuntimeControlsOpen,
 		setIsRuntimeControlsOpen,
 		maxSteps,
@@ -103,8 +135,6 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		isPromptTemplatesSettingsOpen,
 		setIsPromptTemplatesSettingsOpen,
 		templates,
-		activeTemplateId,
-		setActiveTemplateId,
 		editingTemplateId,
 		templateName,
 		setTemplateName,
@@ -120,6 +150,12 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		deleteTemplateById,
 		isSkillsSettingsOpen,
 		setIsSkillsSettingsOpen,
+		isSettingsTransferOpen,
+		setIsSettingsTransferOpen,
+		settingsTransferSelection,
+		settingsTransferJson,
+		setSettingsTransferJson,
+		settingsTransferStatus,
 		showSkillForm,
 		setShowSkillForm,
 		editingSkillId,
@@ -131,6 +167,10 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		startEditSkill,
 		clearSkillEditor,
 		deleteSkillById,
+		toggleSettingsTransferCategory,
+		exportSettingsJson,
+		loadSettingsTransferFile,
+		importSettingsJson,
 		skills,
 		isDark,
 		inputClass,
@@ -228,135 +268,164 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 													onClick={() => setActiveModelId(config.id)}
 													className='flex-1 text-left min-w-0'
 												>
-													<div className='font-semibold truncate flex items-center gap-2'>
+													<div className='font-semibold truncate flex items-center gap-2 flex-wrap'>
 														{config.name}
+														<span
+															className={`text-[10px] px-1.5 py-0 rounded border font-normal ${
+																config.kind === 'api'
+																	? 'border-gpt-border text-gpt-muted'
+																	: 'border-gpt-accent/40 text-gpt-accent'
+															}`}
+														>
+															{config.kind === 'api' ? 'API' : 'Web GPU'}
+														</span>
+														{config.kind === 'webgpu' && (
+															<span className='text-[10px] text-gpt-muted font-normal'>
+																{config.backend}
+															</span>
+														)}
 														{activeModelId === config.id && (
 															<span className='text-[10px] text-gpt-accent font-normal'>active</span>
 														)}
 													</div>
-													<div className={`${subtleClass} truncate`}>{config.modelName}</div>
-													<div className={`${subtleClass} text-[11px] truncate`}>{config.baseUrl}</div>
-													{config.supportsVision && (
+													<div className={`${subtleClass} truncate`}>
+														{getModelDisplayName(config)}
+													</div>
+													{config.kind === 'api' ? (
+														<div className={`${subtleClass} text-[11px] truncate`}>
+															{config.baseUrl}
+														</div>
+													) : (
+														<div className={`${subtleClass} text-[11px] truncate`}>
+															Local inference
+														</div>
+													)}
+													{(config.kind === 'api'
+														? config.supportsVision
+														: config.supportsVision) && (
 														<div className='text-[10px] text-gpt-accent mt-0.5'>vision enabled</div>
 													)}
+													{config.kind === 'webgpu' ? (
+														<div className={`text-[10px] mt-0.5 ${subtleClass}`}>
+															context {config.contextWindowTokens.toLocaleString()} tok
+														</div>
+													) : null}
 												</button>
-												<div className='flex items-center gap-1'>
+												<button
+													onClick={() =>
+														setOpenModelMenuId(
+															openModelMenuId === config.id ? null : config.id
+														)
+													}
+													className='inline-flex h-8 w-8 items-center justify-center rounded-lg text-gpt-muted hover:text-gpt-text hover:bg-gpt-elevated transition-colors'
+													title='Actions'
+												>
+													<MoreVerticalIcon />
+												</button>
+											</div>
+											<div className='mt-2 flex items-center gap-2'>
+												<button
+													onClick={() => testModelConfigById(config.id)}
+													disabled={Boolean(modelTestingById[config.id])}
+													className={`text-xs px-2 py-1 rounded border ${
+														secondaryButtonClass
+													} ${modelTestingById[config.id] ? 'opacity-70 cursor-wait' : ''}`}
+												>
+													{modelTestingById[config.id] ? 'Testing...' : 'Test'}
+												</button>
+												{modelTestResultById[config.id] ? (
+													<div
+														className={`text-[11px] truncate ${
+															modelTestResultById[config.id].startsWith('Connected') ||
+															modelTestResultById[config.id].startsWith('Local model')
+																? 'text-gpt-success'
+																: 'text-gpt-danger'
+														}`}
+														title={modelTestResultById[config.id]}
+													>
+														{modelTestResultById[config.id]}
+													</div>
+												) : null}
+											</div>
+											{openModelMenuId === config.id && (
+												<div
+													className={`absolute right-2 top-10 z-20 min-w-[8.5rem] rounded-lg border p-1 text-xs shadow-lg ${
+														isDark
+															? 'bg-gpt-surface border-gpt-border'
+															: 'bg-gpt-surface border-gpt-border'
+													}`}
+												>
 													<button
-														onClick={() => startEditModelConfig(config.id)}
-														className={`text-xs px-2 py-1 rounded border ${secondaryButtonClass}`}
+														onClick={() => {
+															setOpenModelMenuId(null);
+															startEditModelConfig(config.id);
+														}}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-elevated text-gpt-text'
 													>
 														Edit
 													</button>
 													<button
-														onClick={() => deleteModelConfigById(config.id)}
-														className='text-xs px-2 py-1 rounded border border-gpt-danger/40 text-gpt-danger hover:bg-gpt-danger-soft'
+														onClick={() => {
+															setOpenModelMenuId(null);
+															deleteModelConfigById(config.id);
+														}}
+														className='block w-full text-left px-2 py-1.5 rounded hover:bg-gpt-danger-soft text-gpt-danger'
 													>
 														Delete
 													</button>
 												</div>
-											</div>
+											)}
 										</div>
 									))}
 								</div>
 							)}
-							{showModelForm && (
-								<div className={`space-y-3 rounded-lg border p-3 ${isDark ? 'border-gpt-border bg-gpt-sidebar/30' : 'border-gpt-border bg-gpt-surface/50'}`}>
-									<div className={`text-xs font-semibold ${labelClass}`}>
-										{editingModelId ? 'Edit Model' : 'New Model'}
-									</div>
-									<div>
-										<label className={`block text-xs mb-1 ${labelClass}`}>Display Name</label>
-										<input
-											className={inputClass}
-											value={modelFormName}
-											onChange={(e) => setModelFormName(e.target.value)}
-											placeholder='e.g. Ollama Local'
-										/>
-									</div>
-									<div>
-										<label className={`block text-xs mb-1 ${labelClass}`}>Base URL</label>
-										<input
-											className={inputClass}
-											value={modelFormBaseUrl}
-											onChange={(e) => setModelFormBaseUrl(e.target.value)}
-											placeholder='http://localhost:11434/v1'
-										/>
-									</div>
-									<div>
-										<label className={`block text-xs mb-1 ${labelClass}`}>API Key</label>
-										<input
-											type='password'
-											className={inputClass}
-											value={modelFormApiKey}
-											onChange={(e) => setModelFormApiKey(e.target.value)}
-										/>
-									</div>
-									<div>
-										<div className='flex justify-between items-center mb-1'>
-											<label className={`block text-xs ${labelClass}`}>Model Name</label>
-											<div className='flex items-center gap-3'>
-												<label className={`flex items-center gap-1 text-[11px] ${subtleClass}`}>
-													<input
-														type='checkbox'
-														className='accent-gpt-accent'
-														checked={modelFormUseManual}
-														onChange={(e) => setModelFormUseManual(e.target.checked)}
-													/>
-													Manual
-												</label>
-												<button
-													onClick={fetchModelsForForm}
-													className='text-[11px] text-gpt-accent hover:text-gpt-accent-hover'
-												>
-													↻ Fetch
-												</button>
-											</div>
-										</div>
-										{!modelFormUseManual && modelFormAvailableModels.length > 0 ? (
-											<select
-												className={inputClass}
-												value={modelFormModelName}
-												onChange={(e) => setModelFormModelName(e.target.value)}
-											>
-												<option value=''>Select a model</option>
-												{modelFormAvailableModels.map((m) => (
-													<option key={m} value={m}>{m}</option>
-												))}
-											</select>
-										) : (
-											<input
-												className={inputClass}
-												value={modelFormModelName}
-												onChange={(e) => setModelFormModelName(e.target.value)}
-												placeholder='e.g. gpt-4o'
-											/>
-										)}
-									</div>
-									<label className={`flex items-center gap-2 text-xs ${isDark ? 'text-gpt-text' : 'text-gpt-text'}`}>
-										<input
-											type='checkbox'
-											className='accent-gpt-accent'
-											checked={modelFormSupportsVision}
-											onChange={(e) => setModelFormSupportsVision(e.target.checked)}
-										/>
-										Vision support
-									</label>
-									<div className='flex items-center gap-2'>
-										<button
-											onClick={saveModelConfig}
-											className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-3 py-1.5 text-xs'
-										>
-											{editingModelId ? 'Update Model' : 'Save Model'}
-										</button>
-										<button
-											onClick={clearModelForm}
-											className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
-										>
-											Cancel
-										</button>
-									</div>
-								</div>
-							)}
+							<ModelSettingsForm
+								isDark={isDark}
+								showModelForm={showModelForm}
+								editingModelId={editingModelId}
+								modelFormTab={modelFormTab}
+								setModelFormTab={setModelFormTab}
+								modelFormName={modelFormName}
+								setModelFormName={setModelFormName}
+								modelFormBaseUrl={modelFormBaseUrl}
+								setModelFormBaseUrl={setModelFormBaseUrl}
+								modelFormApiKey={modelFormApiKey}
+								setModelFormApiKey={setModelFormApiKey}
+								modelFormModelName={modelFormModelName}
+								setModelFormModelName={setModelFormModelName}
+								modelFormSupportsVision={modelFormSupportsVision}
+								setModelFormSupportsVision={setModelFormSupportsVision}
+								modelFormUseManual={modelFormUseManual}
+								setModelFormUseManual={setModelFormUseManual}
+								modelFormAvailableModels={modelFormAvailableModels}
+								fetchModelsForForm={fetchModelsForForm}
+								modelFormWebGpuBackend={modelFormWebGpuBackend}
+								setModelFormWebGpuBackend={setModelFormWebGpuBackend}
+								modelFormWebGpuSource={modelFormWebGpuSource}
+								setModelFormWebGpuSource={setModelFormWebGpuSource}
+								modelFormWebGpuHfOnnx={modelFormWebGpuHfOnnx}
+								setModelFormWebGpuHfOnnx={setModelFormWebGpuHfOnnx}
+								modelFormWebGpuHfGgufRepo={modelFormWebGpuHfGgufRepo}
+								setModelFormWebGpuHfGgufRepo={setModelFormWebGpuHfGgufRepo}
+								modelFormWebGpuHfGgufFile={modelFormWebGpuHfGgufFile}
+								setModelFormWebGpuHfGgufFile={setModelFormWebGpuHfGgufFile}
+								modelFormWebGpuGgufUrl={modelFormWebGpuGgufUrl}
+								setModelFormWebGpuGgufUrl={setModelFormWebGpuGgufUrl}
+								modelFormGgufConfigError={modelFormGgufConfigError}
+								setModelFormGgufConfigError={setModelFormGgufConfigError}
+								modelConfigs={modelConfigs}
+								modelFormWebGpuUpload={modelFormWebGpuUpload}
+								setModelFormWebGpuUpload={setModelFormWebGpuUpload}
+								modelFormWebGpuContextWindowTokens={modelFormWebGpuContextWindowTokens}
+								setModelFormWebGpuContextWindowTokens={setModelFormWebGpuContextWindowTokens}
+								webGpuSaving={webGpuSaving}
+								saveModelConfig={saveModelConfig}
+								clearModelForm={clearModelForm}
+								inputClass={inputClass}
+								labelClass={labelClass}
+								subtleClass={subtleClass}
+								secondaryButtonClass={secondaryButtonClass}
+							/>
 						</div>
 					)}
 				</div>
@@ -467,17 +536,48 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 					)}
 				</div>
 
-				{/* MCP Servers */}
-				<div className={`${panelClass} rounded-lg p-4`}>
-					<button
-						onClick={() => setIsMcpSettingsOpen((v) => !v)}
-						className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
-					>
-						<span>MCP Servers</span>
-						<ChevronIcon open={isMcpSettingsOpen} />
-					</button>
+			{/* Memory */}
+			<div className={`${panelClass} rounded-lg p-4`}>
+				<button
+					onClick={() => setIsMemorySettingsOpen((v) => !v)}
+					className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+				>
+					<span>Memory</span>
+					<ChevronIcon open={isMemorySettingsOpen} />
+				</button>
+				{isMemorySettingsOpen && (
+					<div className='space-y-3'>
+						<div className={`text-xs ${subtleClass}`}>
+							When enabled, the agent automatically compresses its session history when the context window is full instead of stopping. The original task is preserved and all past actions are summarized.
+						</div>
+						<label className={`flex items-center gap-2 text-xs ${isDark ? 'text-gpt-text' : 'text-gpt-text'}`}>
+							<input
+								type='checkbox'
+								className='accent-gpt-accent'
+								checked={memoryEnabled}
+								onChange={(e) => setMemoryEnabled(e.target.checked)}
+							/>
+							Enable auto-compression (Dreaming)
+						</label>
+					</div>
+				)}
+			</div>
+
+			{/* MCP Servers */}
+			<div className={`${panelClass} rounded-lg p-4`}>
+				<button
+					onClick={() => setIsMcpSettingsOpen((v) => !v)}
+					className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+				>
+					<span>MCP Servers</span>
+					<ChevronIcon open={isMcpSettingsOpen} />
+				</button>
 					{isMcpSettingsOpen && (
 						<div className='space-y-3'>
+							<div className={`text-xs ${subtleClass}`}>
+								Use in agent task:{' '}
+								<span className='text-gpt-text'>@mcp:ServerName</span> (same as the JSON key under mcpServers)
+							</div>
 							<button
 								onClick={() => {
 									setShowAddMcp((v) => !v);
@@ -839,9 +939,7 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 					{isPromptTemplatesSettingsOpen && (
 						<div className='space-y-3'>
 							<div className='flex items-center justify-between gap-2'>
-								<div className={`text-xs ${subtleClass}`}>
-									Active: {templates.find(t => t.id === activeTemplateId)?.name || 'None'}
-								</div>
+								<div className={`text-xs ${subtleClass}`}>Templates can be appended from chat.</div>
 								<button
 									onClick={() => { clearTemplateEditor(); setShowTemplateForm(true); }}
 									className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
@@ -849,21 +947,6 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 									New Template
 								</button>
 							</div>
-							{templates.length > 0 && (
-								<div>
-									<label className={`block text-xs mb-1 ${labelClass}`}>Active Template</label>
-									<select
-										className={inputClass}
-										value={activeTemplateId}
-										onChange={(e) => setActiveTemplateId(e.target.value)}
-									>
-										<option value=''>None</option>
-										{templates.map((t) => (
-											<option key={t.id} value={t.id}>{t.name}</option>
-										))}
-									</select>
-								</div>
-							)}
 							{templates.length === 0 ? (
 								<div className={`text-xs ${subtleClass}`}>No templates yet.</div>
 							) : (
@@ -996,6 +1079,89 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 										<button onClick={clearSkillEditor} className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}>Cancel</button>
 									</div>
 								</div>
+							)}
+						</div>
+					)}
+				</div>
+
+				{/* Import / Export */}
+				<div className={`${panelClass} rounded-lg p-4`}>
+					<button
+						onClick={() => setIsSettingsTransferOpen((v) => !v)}
+						className='w-full flex items-center justify-between text-xs font-semibold text-gpt-muted mb-3 uppercase tracking-wide'
+					>
+						<span>Import / Export</span>
+						<ChevronIcon open={isSettingsTransferOpen} />
+					</button>
+					{isSettingsTransferOpen && (
+						<div className='space-y-3'>
+							<div className={`text-xs ${subtleClass}`}>
+								Export/import JSON for settings transfer across browsers. Assets, API keys, and session memory are excluded.
+							</div>
+							<div className='grid grid-cols-2 gap-2 text-xs'>
+								<label className='flex items-center gap-2'>
+									<input type='checkbox' className='accent-gpt-accent' checked={settingsTransferSelection.models} onChange={() => toggleSettingsTransferCategory('models')} />
+									Models (without API keys)
+								</label>
+								<label className='flex items-center gap-2'>
+									<input type='checkbox' className='accent-gpt-accent' checked={settingsTransferSelection.runtime} onChange={() => toggleSettingsTransferCategory('runtime')} />
+									Runtime Controls
+								</label>
+								<label className='flex items-center gap-2'>
+									<input type='checkbox' className='accent-gpt-accent' checked={settingsTransferSelection.mcpServers} onChange={() => toggleSettingsTransferCategory('mcpServers')} />
+									MCP Servers
+								</label>
+								<label className='flex items-center gap-2'>
+									<input type='checkbox' className='accent-gpt-accent' checked={settingsTransferSelection.userContexts} onChange={() => toggleSettingsTransferCategory('userContexts')} />
+									User Contexts
+								</label>
+								<label className='flex items-center gap-2'>
+									<input type='checkbox' className='accent-gpt-accent' checked={settingsTransferSelection.templates} onChange={() => toggleSettingsTransferCategory('templates')} />
+									Prompt Templates
+								</label>
+								<label className='flex items-center gap-2'>
+									<input type='checkbox' className='accent-gpt-accent' checked={settingsTransferSelection.skills} onChange={() => toggleSettingsTransferCategory('skills')} />
+									User Skills
+								</label>
+							</div>
+							<div className='flex flex-wrap gap-2'>
+								<button
+									onClick={() => exportSettingsJson('all')}
+									className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-3 py-1.5 text-xs'
+								>
+									Export All
+								</button>
+								<button
+									onClick={() => exportSettingsJson('selected')}
+									className={`text-xs px-3 py-1.5 rounded border ${secondaryButtonClass}`}
+								>
+									Export Selected
+								</button>
+								<label className={`text-xs px-3 py-1.5 rounded border cursor-pointer ${secondaryButtonClass}`}>
+									Load JSON File
+									<input
+										type='file'
+										accept='application/json,.json'
+										className='hidden'
+										onChange={(e) => loadSettingsTransferFile(e.target.files)}
+									/>
+								</label>
+								<button
+									onClick={importSettingsJson}
+									className='bg-gpt-accent hover:bg-gpt-accent-hover text-gpt-on-accent rounded px-3 py-1.5 text-xs'
+								>
+									Import Selected (Merge)
+								</button>
+							</div>
+							<textarea
+								className={inputClass}
+								rows={8}
+								placeholder='Paste settings JSON here...'
+								value={settingsTransferJson}
+								onChange={(e) => setSettingsTransferJson(e.target.value)}
+							/>
+							{settingsTransferStatus && (
+								<div className={`text-xs ${subtleClass}`}>{settingsTransferStatus}</div>
 							)}
 						</div>
 					)}

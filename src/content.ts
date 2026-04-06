@@ -6,12 +6,13 @@ console.log("General Agent Content Script Loaded");
 const interactableSelector = 'button, a, input, textarea, select, [role="button"], [role="textbox"], [role="link"], [role="combobox"], [role="menuitem"], [role="option"], [role="checkbox"], [role="radio"], [role="tab"], [role="switch"], [contenteditable="true"], [tabindex]';
 const agentIdAttr = 'data-agent-id';
 let agentIdCounter = 0;
+const frameScopeId = Math.random().toString(36).slice(2, 8);
 const virtualCursor = createVirtualCursor();
 
 const getOrAssignAgentId = (el: Element) => {
     const existing = el.getAttribute(agentIdAttr);
     if (existing) return existing;
-    const id = `el_${Date.now().toString(36)}_${(agentIdCounter++).toString(36)}`;
+    const id = `el_${frameScopeId}_${Date.now().toString(36)}_${(agentIdCounter++).toString(36)}`;
     el.setAttribute(agentIdAttr, id);
     return id;
 }
@@ -76,7 +77,6 @@ const buildElementMap = () => {
     const elements = Array.from(document.querySelectorAll(interactableSelector)).filter(isElementVisible);
     return elements.map(el => {
         const rect = el.getBoundingClientRect();
-        const style = window.getComputedStyle(el as Element);
         const id = getOrAssignAgentId(el);
         const tag = el.tagName.toLowerCase();
         const role = el.getAttribute('role') || '';
@@ -87,44 +87,107 @@ const buildElementMap = () => {
         const title = el.getAttribute('title') || '';
         const href = (el as HTMLAnchorElement).href || '';
         const disabled = (el as HTMLInputElement).disabled || false;
+        const checked = (el as HTMLInputElement).checked ?? undefined;
+        const value = (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)
+            ? el.value?.slice(0, 100) : undefined;
         const text = getElementText(el);
-        return {
-            id,
-            tag,
-            role,
-            type,
-            name,
-            placeholder,
-            ariaLabel,
-            title,
-            href,
-            text,
-            disabled,
-            rect: {
-                x: Math.round(rect.x),
-                y: Math.round(rect.y),
-                width: Math.round(rect.width),
-                height: Math.round(rect.height)
-            },
-            style: {
-                color: style.color,
-                backgroundColor: style.backgroundColor,
-                fontSize: style.fontSize,
-                fontWeight: style.fontWeight,
-                zIndex: style.zIndex
-            }
+        const entry: Record<string, unknown> = { id, tag, text };
+        if (role) entry.role = role;
+        if (type && type !== 'submit' && type !== 'button') entry.type = type;
+        if (type === 'file') entry.type = 'file';
+        if (name) entry.name = name;
+        if (placeholder) entry.placeholder = placeholder;
+        if (ariaLabel) entry.ariaLabel = ariaLabel;
+        if (title) entry.title = title;
+        if (href) {
+            entry.href = href.length > 120 ? href.slice(0, 120) : href;
+            entry.hrefFull = href;
+        }
+        if (disabled) entry.disabled = true;
+        if (checked !== undefined && checked !== false) entry.checked = checked;
+        if (value) entry.value = value;
+        entry.rect = {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            w: Math.round(rect.width),
+            h: Math.round(rect.height)
         };
+        return entry;
     });
 }
 
 const setNativeValue = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
     const proto = Object.getPrototypeOf(el);
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+        ?? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+        ?? Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
     if (setter) {
         setter.call(el, value);
     } else {
         (el as any).value = value;
     }
+}
+
+const dispatchTypingEvents = (el: HTMLElement) => {
+    el.dispatchEvent(new Event('focus', { bubbles: true }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+const findMatchingSelectOption = (selectEl: HTMLSelectElement, rawValue: unknown) => {
+    const target = String(rawValue ?? '').trim();
+    if (!target) return null;
+    const lower = target.toLowerCase();
+    const options = Array.from(selectEl.options);
+    return (
+        options.find((o) => o.value === target) ||
+        options.find((o) => o.text.trim().toLowerCase() === lower) ||
+        options.find((o) => o.value.trim().toLowerCase() === lower) ||
+        options.find((o) => o.text.trim().toLowerCase().includes(lower)) ||
+        null
+    );
+}
+
+const dispatchSelectEvents = (el: HTMLSelectElement) => {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+const setSelectValueWithFallback = async (
+    el: HTMLSelectElement,
+    option: HTMLOptionElement,
+    alpha = 0.2
+) => {
+    const before = el.value;
+    await performReliableClick(el, virtualCursor, alpha);
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Try a click-like path first.
+    option.selected = true;
+    dispatchSelectEvents(el);
+    if (el.value === option.value) return 'mouse-first';
+
+    // Fallback to direct value assignment.
+    el.value = option.value;
+    dispatchSelectEvents(el);
+    if (el.value === option.value) return 'value-fallback';
+
+    // Restore previous value if nothing changed.
+    el.value = before;
+    dispatchSelectEvents(el);
+    return '';
+}
+
+const clearFieldValue = (el: HTMLElement) => {
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        setNativeValue(el, '');
+    } else if (el instanceof HTMLSelectElement) {
+        el.selectedIndex = 0;
+    } else if (el.isContentEditable) {
+        el.textContent = '';
+    }
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 const getPageContent = () => {
@@ -183,6 +246,62 @@ const pickFileInput = (root?: HTMLElement | null) => {
     if (visible) return visible;
     // Many modern job forms keep file inputs hidden and trigger them via custom buttons.
     return inputs[0];
+}
+
+const resolveDragPoint = (
+    params: Record<string, any>,
+    mode: "from" | "to",
+    fromPoint?: { x: number; y: number }
+) => {
+    const idKey = mode === "from" ? "id" : "toId";
+    const labelKey = mode === "from" ? "label" : "toLabel";
+    const xKey = mode === "from" ? "x" : "toX";
+    const yKey = mode === "from" ? "y" : "toY";
+    const rawX = Number(params?.[xKey]);
+    const rawY = Number(params?.[yKey]);
+    if (Number.isFinite(rawX) && Number.isFinite(rawY)) {
+        return {
+            x: rawX,
+            y: rawY,
+            source: `coords ${Math.round(rawX)},${Math.round(rawY)}`
+        };
+    }
+
+    const id = typeof params?.[idKey] === "string" ? params[idKey].trim() : "";
+    if (id) {
+        const el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLElement | null;
+        if (el) {
+            el.scrollIntoView({ block: "center", inline: "center" });
+            const point = virtualCursor.centerOf(el);
+            return { ...point, source: `id ${id}` };
+        }
+    }
+
+    const label = typeof params?.[labelKey] === "string" ? params[labelKey].trim() : "";
+    if (label) {
+        const el =
+            findElementByPlaceholderOrLabel(label) ||
+            findElementByText(label);
+        if (el) {
+            el.scrollIntoView({ block: "center", inline: "center" });
+            const point = virtualCursor.centerOf(el);
+            return { ...point, source: `${mode === "from" ? "label" : "toLabel"} "${label}"` };
+        }
+    }
+
+    if (mode === "to" && fromPoint) {
+        const deltaX = Number(params?.deltaX);
+        const deltaY = Number(params?.deltaY);
+        if (Number.isFinite(deltaX) || Number.isFinite(deltaY)) {
+            return {
+                x: fromPoint.x + (Number.isFinite(deltaX) ? deltaX : 0),
+                y: fromPoint.y + (Number.isFinite(deltaY) ? deltaY : 0),
+                source: `delta (${Number.isFinite(deltaX) ? deltaX : 0},${Number.isFinite(deltaY) ? deltaY : 0})`
+            };
+        }
+    }
+
+    return null;
 }
 
 const executeAction = async (action: any, assets?: any[]) => {
@@ -254,8 +373,7 @@ const executeAction = async (action: any, assets?: any[]) => {
                 } else if ((el as HTMLElement).isContentEditable) {
                     el.textContent = text;
                 }
-                el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+                dispatchTypingEvents(el as HTMLElement);
                 return `Typed "${text}" into "${label}"`;
             }
             return `Failed to find input "${label}"`;
@@ -277,8 +395,7 @@ const executeAction = async (action: any, assets?: any[]) => {
                 } else if (el.isContentEditable) {
                     el.textContent = text;
                 }
-                el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+                dispatchTypingEvents(el);
                 return `Typed "${text}" into id ${id}`;
             }
             return `Failed to find element id ${id}`;
@@ -299,11 +416,64 @@ const executeAction = async (action: any, assets?: any[]) => {
                 } else if (el.isContentEditable) {
                     el.textContent = text;
                 }
-                el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+                dispatchTypingEvents(el);
                 return `Typed "${text}" at ${x},${y}`;
             }
             return `Failed to find element at ${x},${y}`;
+        }
+
+        if (act === "FOCUS") {
+            const id = params.id;
+            const label = String(params.label || '').trim();
+            let el: HTMLElement | null = null;
+            if (id) {
+                el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLElement | null;
+            } else if (label) {
+                el = findElementByPlaceholderOrLabel(label) || findElementByText(label);
+            }
+            if (el) {
+                el.scrollIntoView({ block: "center", inline: "center" });
+                el.focus();
+                return `Focused ${id ? `id ${id}` : `"${label}"`}`;
+            }
+            return `Failed to find element to focus`;
+        }
+
+        if (act === "CLEAR") {
+            const id = params.id;
+            const label = String(params.label || '').trim();
+            let el: HTMLElement | null = null;
+            if (id) {
+                el = document.querySelector(`[${agentIdAttr}="${CSS.escape(id)}"]`) as HTMLElement | null;
+            } else if (label) {
+                el = findElementByPlaceholderOrLabel(label);
+            }
+            if (el) {
+                el.scrollIntoView({ block: "center", inline: "center" });
+                el.focus();
+                clearFieldValue(el);
+                return `Cleared ${id ? `id ${id}` : `"${label}"`}`;
+            }
+            return `Failed to find element to clear`;
+        }
+
+        if (act === "DOUBLE_CLICK") {
+            let el: HTMLElement | null = null;
+            if (params.id) {
+                el = document.querySelector(`[${agentIdAttr}="${CSS.escape(params.id)}"]`) as HTMLElement | null;
+            } else if (params.label) {
+                el = findElementByText(String(params.label));
+            } else if (typeof params.x === 'number' && typeof params.y === 'number') {
+                el = document.elementFromPoint(params.x, params.y) as HTMLElement | null;
+            }
+            if (el) {
+                el.scrollIntoView({ block: "center", inline: "center" });
+                const { x, y } = virtualCursor.centerOf(el);
+                await virtualCursor.clickAt(el, x, y, { alpha: Number(params?.alpha ?? 0.2) });
+                el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+                return `Double-clicked ${params.id ? `id ${params.id}` : params.label ? `"${params.label}"` : `(${params.x},${params.y})`}`;
+            }
+            return `Failed to find element for double-click`;
         }
 
         if (act === "SCROLL") {
@@ -315,7 +485,9 @@ const executeAction = async (action: any, assets?: any[]) => {
                 await virtualCursor.wheelAt(x, y, directionName, { alpha: Number(params?.alpha ?? 0.2) });
             }
             target.scrollBy({ top: direction, behavior: "smooth" });
-            return direction > 0 ? "Scrolled down" : "Scrolled up";
+            await new Promise(r => setTimeout(r, 350));
+            const visibleCount = collectInteractables().length;
+            return `Scrolled ${directionName}. ${visibleCount} interactive elements now visible.`;
         }
 
         if (act === "WAIT") {
@@ -360,6 +532,31 @@ const executeAction = async (action: any, assets?: any[]) => {
             return `Failed to find element at ${x},${y}`;
         }
 
+        if (act === "DRAG" || act === "DRAG_ID" || act === "DRAG_COORDS") {
+            const sourceParams =
+                act === "DRAG_ID"
+                    ? { ...params, id: params.id }
+                    : act === "DRAG_COORDS"
+                        ? { ...params, x: params.x, y: params.y }
+                        : params;
+            const fromPoint = resolveDragPoint(sourceParams, "from");
+            if (!fromPoint) {
+                return "Failed to resolve drag start point. Provide id, label, or x/y.";
+            }
+            const toPoint = resolveDragPoint(params, "to", fromPoint);
+            if (!toPoint) {
+                return "Failed to resolve drag end point. Provide toId, toLabel, toX/toY, or deltaX/deltaY.";
+            }
+            await virtualCursor.dragBetween(
+                fromPoint.x,
+                fromPoint.y,
+                toPoint.x,
+                toPoint.y,
+                { alpha: Number(params?.alpha ?? 0.2) }
+            );
+            return `Dragged from ${fromPoint.source} to ${toPoint.source}`;
+        }
+
         if (act === "UPLOAD_ASSET") {
             const assetName = String(params.assetName || '');
             if (!assetName) return "Missing assetName";
@@ -394,15 +591,23 @@ const executeAction = async (action: any, assets?: any[]) => {
                 const { x, y } = virtualCursor.centerOf(el);
                 await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 if (el instanceof HTMLSelectElement) {
-                    const option = Array.from(el.options).find(o => o.value === value || o.text.toLowerCase() === String(value).toLowerCase());
-                    if (option) el.value = option.value;
+                    const option = findMatchingSelectOption(el, value);
+                    if (!option) return `Failed to find option "${value}" in "${label}"`;
+                    const method = await setSelectValueWithFallback(
+                        el,
+                        option,
+                        Number(params?.alpha ?? 0.2)
+                    );
+                    if (!method) {
+                        return `Failed to select "${value}" in "${label}"`;
+                    }
+                    return `Selected "${option.value}" in "${label}" via ${method}`;
                 } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     setNativeValue(el, value);
                 } else if ((el as HTMLElement).isContentEditable) {
                     el.textContent = String(value);
                 }
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+                dispatchTypingEvents(el as HTMLElement);
                 return `Selected "${value}" in "${label}"`;
             }
             return `Failed to find select "${label}"`;
@@ -417,15 +622,23 @@ const executeAction = async (action: any, assets?: any[]) => {
                 const { x, y } = virtualCursor.centerOf(el);
                 await virtualCursor.moveTo(x, y, { alpha: Number(params?.alpha ?? 0.2) });
                 if (el instanceof HTMLSelectElement) {
-                    const option = Array.from(el.options).find(o => o.value === value || o.text.toLowerCase() === String(value).toLowerCase());
-                    if (option) el.value = option.value;
+                    const option = findMatchingSelectOption(el, value);
+                    if (!option) return `Failed to find option "${value}" in id ${id}`;
+                    const method = await setSelectValueWithFallback(
+                        el,
+                        option,
+                        Number(params?.alpha ?? 0.2)
+                    );
+                    if (!method) {
+                        return `Failed to select "${value}" in id ${id}`;
+                    }
+                    return `Selected "${option.value}" in id ${id} via ${method}`;
                 } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
                     setNativeValue(el, value);
                 } else if (el.isContentEditable) {
                     el.textContent = String(value);
                 }
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+                dispatchTypingEvents(el);
                 return `Selected "${value}" in id ${id}`;
             }
             return `Failed to find element id ${id}`;
@@ -433,10 +646,17 @@ const executeAction = async (action: any, assets?: any[]) => {
 
         if (act === "KEY") {
             const key = params.key || "Enter";
-            const event = new KeyboardEvent('keydown', { key, bubbles: true });
+            const ctrl = Boolean(params.ctrl);
+            const shift = Boolean(params.shift);
+            const alt = Boolean(params.alt);
+            const meta = Boolean(params.meta);
+            const opts = { key, code: key, bubbles: true, cancelable: true, ctrlKey: ctrl, shiftKey: shift, altKey: alt, metaKey: meta };
             const target = document.activeElement || document.body;
-            target.dispatchEvent(event);
-            return `Pressed ${key}`;
+            target.dispatchEvent(new KeyboardEvent('keydown', opts));
+            target.dispatchEvent(new KeyboardEvent('keypress', opts));
+            target.dispatchEvent(new KeyboardEvent('keyup', opts));
+            const modifiers = [ctrl && 'Ctrl', shift && 'Shift', alt && 'Alt', meta && 'Meta'].filter(Boolean).join('+');
+            return `Pressed ${modifiers ? modifiers + '+' : ''}${key}`;
         }
 
         if (act === "NAVIGATE") {

@@ -8,6 +8,7 @@ export type VirtualCursor = {
     hoverAt: (el: Element, x: number, y: number, options?: CursorMotionOptions) => Promise<void>;
     clickAt: (el: Element, x: number, y: number, options?: CursorMotionOptions) => Promise<void>;
     wheelAt: (x: number, y: number, direction: "up" | "down", options?: CursorMotionOptions) => Promise<void>;
+    dragBetween: (startX: number, startY: number, endX: number, endY: number, options?: CursorMotionOptions) => Promise<void>;
     centerOf: (el: Element) => { x: number; y: number };
 };
 
@@ -126,8 +127,36 @@ export const createVirtualCursor = (): VirtualCursor => {
         }
     };
 
-    const dispatchMouse = (el: Element, type: string, clientX: number, clientY: number) => {
-        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, view: window }));
+    const dispatchMouse = (
+        el: Element,
+        type: string,
+        clientX: number,
+        clientY: number,
+        init: MouseEventInit = {}
+    ) => {
+        el.dispatchEvent(new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX,
+            clientY,
+            view: window,
+            ...init
+        }));
+    };
+
+    const dispatchDrag = (el: Element, type: string, clientX: number, clientY: number, dataTransfer: DataTransfer | null) => {
+        try {
+            const event = new DragEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                clientX,
+                clientY,
+                dataTransfer: dataTransfer || undefined
+            });
+            el.dispatchEvent(event);
+        } catch {
+            dispatchMouse(el, type, clientX, clientY);
+        }
     };
 
     const moveTo = async (targetX: number, targetY: number, options?: CursorMotionOptions) => {
@@ -219,6 +248,54 @@ export const createVirtualCursor = (): VirtualCursor => {
         await pulseWheel(direction);
     };
 
+    const dragBetween = async (
+        startX: number,
+        startY: number,
+        endX: number,
+        endY: number,
+        options?: CursorMotionOptions
+    ) => {
+        await moveTo(startX, startY, options);
+        const startEl = (document.elementFromPoint(x, y) as Element | null) || document.body;
+        const dataTransfer = (() => {
+            try {
+                return new DataTransfer();
+            } catch {
+                return null;
+            }
+        })();
+        dispatchMouse(startEl, "mousemove", x, y);
+        dispatchMouse(startEl, "mouseover", x, y);
+        dispatchMouse(startEl, "mousedown", x, y, { button: 0, buttons: 1 });
+        dispatchDrag(startEl, "dragstart", x, y, dataTransfer);
+
+        const distance = Math.hypot(endX - startX, endY - startY);
+        const steps = Math.max(8, Math.min(45, Math.round(distance / 24)));
+        let lastTarget = startEl;
+        for (let i = 1; i <= steps; i += 1) {
+            const t = i / steps;
+            const ix = startX + (endX - startX) * t;
+            const iy = startY + (endY - startY) * t;
+            await moveTo(ix, iy, {
+                alpha: Math.max(0.08, Number(options?.alpha ?? 0.2) * 0.85),
+                durationMs: 480
+            });
+            const target = (document.elementFromPoint(x, y) as Element | null) || lastTarget;
+            dispatchMouse(target, "mousemove", x, y, { button: 0, buttons: 1 });
+            dispatchDrag(target, "dragover", x, y, dataTransfer);
+            if (target !== lastTarget) {
+                dispatchMouse(target, "mouseover", x, y);
+                dispatchDrag(target, "dragenter", x, y, dataTransfer);
+            }
+            lastTarget = target;
+        }
+
+        const endEl = (document.elementFromPoint(x, y) as Element | null) || lastTarget;
+        dispatchDrag(endEl, "drop", x, y, dataTransfer);
+        dispatchMouse(endEl, "mouseup", x, y, { button: 0, buttons: 0 });
+        dispatchDrag(startEl, "dragend", x, y, dataTransfer);
+    };
+
     const centerOf = (el: Element) => {
         const rect = el.getBoundingClientRect();
         return {
@@ -227,5 +304,5 @@ export const createVirtualCursor = (): VirtualCursor => {
         };
     };
 
-    return { moveTo, hoverAt, clickAt, wheelAt, centerOf };
+    return { moveTo, hoverAt, clickAt, wheelAt, dragBetween, centerOf };
 };

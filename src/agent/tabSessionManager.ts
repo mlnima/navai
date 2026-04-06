@@ -110,10 +110,10 @@ export const createTabSessionManager = (sessionId: string) => {
     };
 
     const activateTab = async (tabId: number) => {
-        const tab = await chrome.tabs.get(tabId);
-        if (Number.isInteger(tab.windowId)) {
-            await chrome.windows.update(tab.windowId, { focused: true });
-        }
+        // const tab = await chrome.tabs.get(tabId);
+        // if (Number.isInteger(tab.windowId)) {
+        //     await chrome.windows.update(tab.windowId, { focused: true });
+        // }
         await chrome.tabs.update(tabId, { active: true });
     };
 

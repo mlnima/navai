@@ -10,7 +10,7 @@ lerna-debug.log*
 image
 node_modules
 dist
-tasks
+
 dist-ssr
 *.local
 
@@ -25,3 +25,8 @@ dist-ssr
 *.sln
 *.sw?
 
+
+
+
+tasks
+testingAssets

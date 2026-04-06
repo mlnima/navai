@@ -4,14 +4,19 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "vendor:onnx": "node scripts/vendor-onnxruntime-assets.mjs",
+    "postinstall": "node scripts/vendor-onnxruntime-assets.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/vendor-onnxruntime-assets.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.0.1",
     "@langchain/core": "^1.1.15",
     "@langchain/openai": "^1.2.2",
+    "@wllama/wllama": "^2.3.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
