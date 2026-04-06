@@ -58,7 +58,12 @@ const normalizeModelConfigs = (parsed: unknown): ModelConfig[] => {
 				w.backend === 'onnx' ? 'onnx' : 'gguf'
 			);
 			if (w.backend === 'onnx' && w.source) {
-				out.push({ ...w, contextWindowTokens: ctx } as ModelConfig);
+				const onnxW = w as ModelConfig & { onnxModelType?: unknown };
+				const onnxModelType =
+					onnxW.onnxModelType === 'image-text-to-text'
+						? ('image-text-to-text' as const)
+						: ('text-generation' as const);
+				out.push({ ...w, contextWindowTokens: ctx, onnxModelType } as ModelConfig);
 				continue;
 			}
 			if (w.backend === 'gguf' && w.source) {

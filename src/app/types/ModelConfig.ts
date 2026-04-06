@@ -16,6 +16,8 @@ export type WebGpuGgufSource =
 	| { type: 'huggingface'; repoId: string; fileName: string }
 	| { type: 'upload'; fileName: string; blobId: string; byteSize: number };
 
+export type OnnxModelType = 'text-generation' | 'image-text-to-text';
+
 export type WebGpuOnnxModelConfig = {
 	kind: 'webgpu';
 	id: string;
@@ -24,6 +26,8 @@ export type WebGpuOnnxModelConfig = {
 	supportsVision: boolean;
 	/** Total context window in tokens (prompt + generation budget for local runtimes). */
 	contextWindowTokens: number;
+	/** Pipeline / architecture type for ONNX loading. */
+	onnxModelType: OnnxModelType;
 	source: WebGpuOnnxSource;
 };
 

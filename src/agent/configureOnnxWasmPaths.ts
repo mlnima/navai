@@ -1,6 +1,6 @@
 /**
  * ONNX Runtime Web defaults to jsDelivr; MV3 extension CSP only allows 'self'.
- * Call once before importing @huggingface/transformers (after onnxruntime-web).
+ * Set a prefix so ORT picks the right module (jsep for WebGPU, asyncify for WASM).
  */
 const configureOnnxWasmPaths = async (): Promise<void> => {
 	const ort = await import('onnxruntime-web/webgpu');
@@ -10,10 +10,7 @@ const configureOnnxWasmPaths = async (): Promise<void> => {
 		typeof chrome !== 'undefined' && typeof chrome.runtime?.getURL === 'function'
 			? chrome.runtime.getURL('onnxruntime/')
 			: `${typeof window !== 'undefined' ? window.location.origin : ''}/onnxruntime/`;
-	wasm.wasmPaths = {
-		mjs: `${base}ort-wasm-simd-threaded.asyncify.mjs`,
-		wasm: `${base}ort-wasm-simd-threaded.asyncify.wasm`,
-	};
+	wasm.wasmPaths = base;
 };
 
 export default configureOnnxWasmPaths;

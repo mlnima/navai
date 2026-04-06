@@ -21,6 +21,8 @@ const distUrl = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${version}/dist`;
 const files = [
 	'ort-wasm-simd-threaded.asyncify.mjs',
 	'ort-wasm-simd-threaded.asyncify.wasm',
+	'ort-wasm-simd-threaded.jsep.mjs',
+	'ort-wasm-simd-threaded.jsep.wasm',
 ];
 
 mkdirSync(outDir, { recursive: true });

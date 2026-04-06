@@ -127,6 +127,7 @@ const useAgentApp = () => {
 	const [modelFormAvailableModels, setModelFormAvailableModels] = useState<string[]>([]);
 	const [modelFormTab, setModelFormTab] = useState<'api' | 'webgpu'>('api');
 	const [modelFormWebGpuBackend, setModelFormWebGpuBackend] = useState<'onnx' | 'gguf'>('onnx');
+	const [modelFormOnnxModelType, setModelFormOnnxModelType] = useState<'text-generation' | 'image-text-to-text'>('text-generation');
 	const [modelFormWebGpuSource, setModelFormWebGpuSource] = useState<
 		'hf' | 'upload' | 'url'
 	>('hf');
@@ -596,67 +597,72 @@ const useAgentApp = () => {
 			if (editingModelId) {
 				const existing = modelConfigs.find((m) => m.id === editingModelId);
 				if (existing?.kind === 'webgpu') {
-					setModelConfigs((prev) =>
-						prev.map((m) =>
-							m.id === editingModelId && m.kind === 'webgpu'
-								? {
-										...m,
-										name,
-										supportsVision: modelFormSupportsVision,
-										contextWindowTokens: normalizeWebGpuContextWindowTokens(
-											modelFormWebGpuContextWindowTokens,
-											m.backend === 'onnx' ? 'onnx' : 'gguf'
-										),
-									}
-								: m
-						)
-					);
+				setModelConfigs((prev) =>
+					prev.map((m) =>
+						m.id === editingModelId && m.kind === 'webgpu'
+							? {
+									...m,
+									name,
+									supportsVision: modelFormSupportsVision,
+									contextWindowTokens: normalizeWebGpuContextWindowTokens(
+										modelFormWebGpuContextWindowTokens,
+										m.backend === 'onnx' ? 'onnx' : 'gguf'
+									),
+									...(m.backend === 'onnx'
+										? { onnxModelType: modelFormOnnxModelType }
+										: {}),
+								}
+							: m
+					)
+				);
 					clearModelForm();
 					return;
 				}
 			}
 			const id = `model_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-			if (modelFormWebGpuBackend === 'onnx') {
-				if (modelFormWebGpuSource === 'hf') {
-					const repoId = parseHfRepoId(modelFormWebGpuHfOnnx);
-					if (!repoId) return;
-					const newConfig: ModelConfig = {
-						kind: 'webgpu',
-						id,
-						name,
-						backend: 'onnx',
-						supportsVision: modelFormSupportsVision,
-						contextWindowTokens: normalizeWebGpuContextWindowTokens(
-							modelFormWebGpuContextWindowTokens,
-							'onnx'
-						),
-						source: { type: 'huggingface', repoId },
-					};
-					setModelConfigs((prev) => [...prev, newConfig]);
-				} else {
-					const file = modelFormWebGpuUpload;
-					if (!file) return;
-					const blobId = `blob_${id}_onnx`;
-					await putModelBlob(blobId, file);
-					const newConfig: ModelConfig = {
-						kind: 'webgpu',
-						id,
-						name,
-						backend: 'onnx',
-						supportsVision: modelFormSupportsVision,
-						contextWindowTokens: normalizeWebGpuContextWindowTokens(
-							modelFormWebGpuContextWindowTokens,
-							'onnx'
-						),
-						source: {
-							type: 'upload',
-							fileName: file.name,
-							blobId,
-							byteSize: file.size,
-						},
-					};
-					setModelConfigs((prev) => [...prev, newConfig]);
-				}
+		if (modelFormWebGpuBackend === 'onnx') {
+			if (modelFormWebGpuSource === 'hf') {
+				const repoId = parseHfRepoId(modelFormWebGpuHfOnnx);
+				if (!repoId) return;
+				const newConfig: ModelConfig = {
+					kind: 'webgpu',
+					id,
+					name,
+					backend: 'onnx',
+					supportsVision: modelFormSupportsVision,
+					contextWindowTokens: normalizeWebGpuContextWindowTokens(
+						modelFormWebGpuContextWindowTokens,
+						'onnx'
+					),
+					onnxModelType: modelFormOnnxModelType,
+					source: { type: 'huggingface', repoId },
+				};
+				setModelConfigs((prev) => [...prev, newConfig]);
+			} else {
+				const file = modelFormWebGpuUpload;
+				if (!file) return;
+				const blobId = `blob_${id}_onnx`;
+				await putModelBlob(blobId, file);
+				const newConfig: ModelConfig = {
+					kind: 'webgpu',
+					id,
+					name,
+					backend: 'onnx',
+					supportsVision: modelFormSupportsVision,
+					contextWindowTokens: normalizeWebGpuContextWindowTokens(
+						modelFormWebGpuContextWindowTokens,
+						'onnx'
+					),
+					onnxModelType: modelFormOnnxModelType,
+					source: {
+						type: 'upload',
+						fileName: file.name,
+						blobId,
+						byteSize: file.size,
+					},
+				};
+				setModelConfigs((prev) => [...prev, newConfig]);
+			}
 			} else {
 				if (modelFormWebGpuSource === 'hf') {
 					const repoId = parseHfRepoId(modelFormWebGpuHfGgufRepo);
@@ -763,6 +769,7 @@ const useAgentApp = () => {
 				)
 			);
 			if (config.backend === 'onnx') {
+				setModelFormOnnxModelType(config.onnxModelType ?? 'text-generation');
 				setModelFormSupportsVision(config.supportsVision);
 				if (config.source.type === 'huggingface') {
 					setModelFormWebGpuSource('hf');
@@ -799,6 +806,7 @@ const useAgentApp = () => {
 		setModelFormUseManual(false);
 		setModelFormAvailableModels([]);
 		setModelFormWebGpuBackend('onnx');
+		setModelFormOnnxModelType('text-generation');
 		setModelFormWebGpuSource('hf');
 		setModelFormWebGpuHfOnnx('onnx-community/Qwen3-0.6B-ONNX');
 		setModelFormWebGpuHfGgufRepo('');
@@ -1058,6 +1066,10 @@ const useAgentApp = () => {
 									w.contextWindowTokens,
 									'onnx'
 								),
+								onnxModelType:
+									w.onnxModelType === 'image-text-to-text'
+										? 'image-text-to-text'
+										: 'text-generation',
 								source: {
 									type: 'huggingface',
 									repoId: hfRepo,
@@ -2743,6 +2755,8 @@ const useAgentApp = () => {
 		setModelFormTab,
 		modelFormWebGpuBackend,
 		setModelFormWebGpuBackend,
+		modelFormOnnxModelType,
+		setModelFormOnnxModelType,
 		modelFormWebGpuSource,
 		setModelFormWebGpuSource,
 		modelFormWebGpuHfOnnx,

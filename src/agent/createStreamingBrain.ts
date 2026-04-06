@@ -3,6 +3,7 @@ import { OpenAiAgentBrain } from './brain';
 import type { StreamingAgentBrain } from './brainTypes';
 import WebGpuGgufBrain from './webGpuGgufBrain';
 import WebGpuOnnxBrain from './webGpuOnnxBrain';
+import WebGpuOnnxVlmBrain from './webGpuOnnxVlmBrain';
 
 const createStreamingBrain = async (
 	config: ModelConfig,
@@ -20,7 +21,9 @@ const createStreamingBrain = async (
 		);
 	}
 	if (config.backend === 'onnx') {
-		return WebGpuOnnxBrain.create(config, opts);
+		return config.onnxModelType === 'image-text-to-text'
+			? WebGpuOnnxVlmBrain.create(config, opts)
+			: WebGpuOnnxBrain.create(config, opts);
 	}
 	return WebGpuGgufBrain.create(config, opts);
 };

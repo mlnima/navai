@@ -43,6 +43,8 @@ type Props = {
 	fetchModelsForForm: () => void;
 	modelFormWebGpuBackend: 'onnx' | 'gguf';
 	setModelFormWebGpuBackend: (v: 'onnx' | 'gguf') => void;
+	modelFormOnnxModelType: 'text-generation' | 'image-text-to-text';
+	setModelFormOnnxModelType: (v: 'text-generation' | 'image-text-to-text') => void;
 	modelFormWebGpuSource: 'hf' | 'upload' | 'url';
 	setModelFormWebGpuSource: (v: 'hf' | 'upload' | 'url') => void;
 	modelFormWebGpuHfOnnx: string;
@@ -91,6 +93,8 @@ const ModelSettingsForm = ({
 	fetchModelsForForm,
 	modelFormWebGpuBackend,
 	setModelFormWebGpuBackend,
+	modelFormOnnxModelType,
+	setModelFormOnnxModelType,
 	modelFormWebGpuSource,
 	setModelFormWebGpuSource,
 	modelFormWebGpuHfOnnx,
@@ -510,6 +514,27 @@ const ModelSettingsForm = ({
 							GGUF
 						</button>
 					</div>
+					{modelFormWebGpuBackend === 'onnx' && (
+						<div>
+							<label className={`block text-xs mb-1 ${labelClass}`}>Architecture</label>
+							<select
+								className={inputClass}
+								value={modelFormOnnxModelType}
+								onChange={(e) =>
+									setModelFormOnnxModelType(
+										e.target.value as 'text-generation' | 'image-text-to-text'
+									)
+								}
+							>
+								<option value='text-generation'>Text Generation (causal LM)</option>
+								<option value='image-text-to-text'>Image-Text-to-Text (VLM, e.g. Gemma 4)</option>
+							</select>
+							<div className={`text-[11px] mt-1 ${subtleClass}`}>
+								Use &quot;Image-Text-to-Text&quot; for multimodal ONNX models that have a vision encoder
+								(e.g. Gemma 4, LLaVA). Use &quot;Text Generation&quot; for text-only models (e.g. Qwen, Phi).
+							</div>
+						</div>
+					)}
 					<div className='flex gap-2 flex-wrap'>
 						<button
 							type='button'

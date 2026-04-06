@@ -44,6 +44,8 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 		setModelFormTab,
 		modelFormWebGpuBackend,
 		setModelFormWebGpuBackend,
+		modelFormOnnxModelType,
+		setModelFormOnnxModelType,
 		modelFormWebGpuSource,
 		setModelFormWebGpuSource,
 		modelFormWebGpuHfOnnx,
@@ -399,9 +401,11 @@ const AgentSettingsScreen = (p: AgentAppModel) => {
 								setModelFormUseManual={setModelFormUseManual}
 								modelFormAvailableModels={modelFormAvailableModels}
 								fetchModelsForForm={fetchModelsForForm}
-								modelFormWebGpuBackend={modelFormWebGpuBackend}
-								setModelFormWebGpuBackend={setModelFormWebGpuBackend}
-								modelFormWebGpuSource={modelFormWebGpuSource}
+							modelFormWebGpuBackend={modelFormWebGpuBackend}
+							setModelFormWebGpuBackend={setModelFormWebGpuBackend}
+							modelFormOnnxModelType={modelFormOnnxModelType}
+							setModelFormOnnxModelType={setModelFormOnnxModelType}
+							modelFormWebGpuSource={modelFormWebGpuSource}
 								setModelFormWebGpuSource={setModelFormWebGpuSource}
 								modelFormWebGpuHfOnnx={modelFormWebGpuHfOnnx}
 								setModelFormWebGpuHfOnnx={setModelFormWebGpuHfOnnx}
